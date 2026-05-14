@@ -1,7 +1,11 @@
 import logging
 import hashlib
 import time
+import asyncio
 import aiosqlite
+import os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -25,6 +29,7 @@ CHANNEL_ID    = "@RaX_ViP"
 BOT_USERNAME  = "Raxdovipbot"
 ADMIN_IDS     = [5614356064]
 DB_PATH       = "bot_files.db"
+PORT          = int(os.environ.get("PORT", 8080))
 # ─────────────────────────────────────────────
 
 logging.basicConfig(
@@ -32,6 +37,18 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+# ─── Simple Web Server for Render ───
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def run_health_server():
+    server = HTTPServer(('0.0.0.0', PORT), HealthCheckHandler)
+    logger.info(f"🌍 Health server started on port {PORT}")
+    server.serve_forever()
 
 db_connection = None
 
@@ -185,9 +202,12 @@ async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(app: Application):
     await db_init()
-    logger.info("🚀 البوت جاهز للعمل")
+    logger.info("🚀 البوت جاهز للعمل مع خادم الصحة")
 
 def main():
+    # Start health check server in a separate thread
+    threading.Thread(target=run_health_server, daemon=True).start()
+
     app = (
         Application.builder()
         .token(BOT_TOKEN)

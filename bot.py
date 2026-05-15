@@ -4,8 +4,8 @@ import time
 import asyncio
 import aiosqlite
 import os
-from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -22,7 +22,7 @@ from telegram.ext import (
 )
 
 # ─────────────────────────────────────────────
-# ⚙️  CONFIG
+# ⚙️  CONFIG (Original User Settings)
 # ─────────────────────────────────────────────
 BOT_TOKEN     = "8707897595:AAHO2wpxyFcbb6mLrg0UjjpT1yP1T8G4qHY"
 CHANNEL_ID    = "@RaX_ViP"
@@ -38,17 +38,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ─── Simple Web Server for Render ───
+# ─── Simple Web Server for Render Health Check ───
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is alive!")
+        self.wfile.write(b"Bot is active and running!")
 
 def run_health_server():
-    server = HTTPServer(('0.0.0.0', PORT), HealthCheckHandler)
-    logger.info(f"🌍 Health server started on port {PORT}")
-    server.serve_forever()
+    try:
+        server = HTTPServer(('0.0.0.0', PORT), HealthCheckHandler)
+        logger.info(f"🌍 Health server active on port {PORT}")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"Health server error: {e}")
 
 db_connection = None
 
@@ -127,19 +130,20 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🎛️ *لوحة التحكم*", parse_mode="Markdown", reply_markup=kb)
         return
     if not args:
-        await update.message.reply_text("👋 أهلاً! استخدم رابطاً خاصاً للحصول على المحتوى.")
+        await update.message.reply_text("👋 أهلاً بك في بوت Rax!\nاستخدم رابطاً خاصاً للحصول على الملفات.")
         return
     key = args[0]
     row = await db_get(key)
     if not row:
-        await update.message.reply_text("❌ الرابط غير صالح.")
+        await update.message.reply_text("❌ عذراً، هذا الرابط غير صالح أو تم حذفه.")
         return
+    
     if await check_subscription(user_id, context.bot):
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
         await send_content(update.effective_chat.id, row, context)
     else:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك في القناة", url=f"https://t.me/{CHANNEL_ID.lstrip('@')}")],[InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data=f"verify:{key}")]])
-        await update.message.reply_text("🔒 *للحصول على المحتوى يجب الاشتراك أولاً!*\n\n1️⃣ اضغط اشترك في القناة\n2️⃣ ثم اضغط ✅ تحقق من الاشتراك", parse_mode="Markdown", reply_markup=kb)
+        await update.message.reply_text("🔒 *للحصول على المحتوى يجب الاشتراك في قناتنا أولاً!*\n\n1️⃣ اضغط على الزر للاشتراك\n2️⃣ بعد الاشتراك، اضغط على زر التحقق ✅", parse_mode="Markdown", reply_markup=kb)
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -148,14 +152,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("verify:"):
         key = data.split(":", 1)[1]
         if await check_subscription(user_id, context.bot):
-            await query.answer("✅ تم التحقق!")
+            await query.answer("✅ تم التحقق بنجاح!")
             await query.message.delete()
             row = await db_get(key)
             if row: 
                 await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
                 await send_content(update.effective_chat.id, row, context)
         else:
-            await query.answer("⚠️ لم تشترك بعد! يرجى الاشتراك في القناة أولاً.", show_alert=True)
+            await query.answer("⚠️ عذراً، لم نجد اشتراكك في القناة بعد. يرجى الاشتراك أولاً!", show_alert=True)
         return
     if not is_admin(user_id): return
     await query.answer()
@@ -164,26 +168,26 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🎛️ *لوحة التحكم*", reply_markup=kb)
     elif data == "admin:add":
         context.user_data["awaiting_file"] = True
-        await query.edit_message_text("📤 أرسل الملف الآن:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
+        await query.edit_message_text("📤 أرسل الآن أي (ملف، صورة، فيديو، أو مقطع صوتي) لإضافته:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
     elif data == "admin:list":
         rows = await db_list()
         if not rows:
-            await query.edit_message_text("📋 فارغ.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
+            await query.edit_message_text("📋 لا توجد ملفات مضافة حالياً.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
             return
-        res = ["📋 *المحتويات:*\n"]
+        res = ["📋 *قائمة الملفات المضافة:*\n"]
         for r in rows: res.append(f"{type_emoji(r['file_type'])} `{r['key']}`\n🔗 {make_link(r['key'])}\n")
         await query.edit_message_text("\n".join(res), parse_mode="Markdown", disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
     elif data == "admin:delete_menu":
         rows = await db_list()
         if not rows:
-            await query.edit_message_text("🗑️ لا يوجد شيء.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
+            await query.edit_message_text("🗑️ لا توجد ملفات لحذفها.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
             return
         btns = [[InlineKeyboardButton(f"{type_emoji(r['file_type'])} {r['key']}", callback_data=f"admin:del:{r['key']}")] for r in rows]
         btns.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")])
-        await query.edit_message_text("🗑️ اختر للحذف:", reply_markup=InlineKeyboardMarkup(btns))
+        await query.edit_message_text("🗑️ اختر الملف الذي تريد حذفه نهائياً:", reply_markup=InlineKeyboardMarkup(btns))
     elif data.startswith("admin:del:"):
         await db_delete(data.split("admin:del:", 1)[1])
-        await query.answer("✅ تم الحذف")
+        await query.answer("✅ تم حذف الملف بنجاح")
         await callback_handler(update, context)
 
 async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -198,16 +202,17 @@ async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: return
     key = hashlib.md5(f"{f_id}{time.time()}".encode()).hexdigest()[:8]
     await db_save(key, f_id, f_type, msg.caption or "")
-    await msg.reply_text(f"✅ تم الحفظ!\n\n🔗 الرابط:\n`{make_link(key)}`")
+    await msg.reply_text(f"✅ تم حفظ الملف بنجاح!\n\n🔗 رابط المشاركة:\n`{make_link(key)}`", parse_mode="Markdown")
 
 async def post_init(app: Application):
     await db_init()
-    logger.info("🚀 البوت جاهز للعمل مع خادم الصحة")
+    logger.info("🚀 Bot is ready and database initialized.")
 
 def main():
-    # Start health check server in a separate thread
+    # Start the health check server for Render compatibility
     threading.Thread(target=run_health_server, daemon=True).start()
 
+    # Using a very stable configuration for Render environment
     app = (
         Application.builder()
         .token(BOT_TOKEN)
@@ -218,11 +223,12 @@ def main():
         .concurrent_updates(True)
         .build()
     )
+    
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler((filters.Document.ALL | filters.PHOTO | filters.VIDEO | filters.AUDIO) & filters.ChatType.PRIVATE, receive_media))
     
-    logger.info("🤖 بدء تشغيل البوت...")
+    logger.info("🤖 Starting bot polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":

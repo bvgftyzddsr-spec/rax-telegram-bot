@@ -1,11 +1,11 @@
 import logging
 import hashlib
 import time
-import asyncio
-import aiosqlite
 import os
 import threading
 import requests
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import (
     Update,
@@ -29,9 +29,9 @@ BOT_TOKEN     = "8707897595:AAHO2wpxyFcbb6mLrg0UjjpT1yP1T8G4qHY"
 CHANNEL_ID    = "@RaX_ViP"
 BOT_USERNAME  = "Raxdovipbot"
 ADMIN_IDS     = [5614356064]
-DB_PATH       = "bot_files.db"
+# رابط قاعدة بيانات Supabase مع كلمة المرور
+DATABASE_URL  = "postgresql://postgres:gta738945961@db.jsbxltfpogoiaqiwsevs.supabase.co:5432/postgres"
 PORT          = int(os.environ.get("PORT", 8080))
-# اسم الرابط الخاص بك على Render (سيتم استخدامه لمنع النوم)
 APP_URL       = "https://rax-telegram-bot.onrender.com" 
 # ─────────────────────────────────────────────
 
@@ -46,7 +46,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is active and running!")
+        self.wfile.write(b"Bot is active and running with Supabase!")
 
 def run_health_server():
     try:
@@ -58,7 +58,6 @@ def run_health_server():
 
 # ─── Keep-Alive Logic (Self-Ping) ───
 def keep_alive():
-    """تقوم هذه الدالة بزيارة الرابط كل 10 دقائق لمنع Render من إدخال البوت في وضع النوم"""
     while True:
         try:
             time.sleep(600) # 10 minutes
@@ -67,48 +66,56 @@ def keep_alive():
         except Exception as e:
             logger.error(f"Keep-alive error: {e}")
 
-db_connection = None
+# ─── Database Logic (PostgreSQL / Supabase) ───
+def get_db_conn():
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
-async def get_db():
-    global db_connection
-    if db_connection is None:
-        db_connection = await aiosqlite.connect(DB_PATH)
-        db_connection.row_factory = aiosqlite.Row
-    return db_connection
+def db_init():
+    conn = get_db_conn()
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS files (
+                key        TEXT PRIMARY KEY,
+                file_id    TEXT NOT NULL,
+                file_type  TEXT NOT NULL,
+                caption    TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    conn.commit()
+    conn.close()
 
-async def db_init():
-    db = await get_db()
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS files (
-            key        TEXT PRIMARY KEY,
-            file_id    TEXT NOT NULL,
-            file_type  TEXT NOT NULL,
-            caption    TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    await db.commit()
+def db_get(key: str):
+    conn = get_db_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT file_id, file_type, caption FROM files WHERE key=%s", (key,))
+        row = cur.fetchone()
+    conn.close()
+    return row
 
-async def db_get(key: str):
-    db = await get_db()
-    async with db.execute("SELECT file_id, file_type, caption FROM files WHERE key=?", (key,)) as cur:
-        return await cur.fetchone()
+def db_save(key: str, file_id: str, file_type: str, caption: str = ""):
+    conn = get_db_conn()
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO files (key, file_id, file_type, caption) VALUES (%s,%s,%s,%s) ON CONFLICT (key) DO UPDATE SET file_id=EXCLUDED.file_id, file_type=EXCLUDED.file_type, caption=EXCLUDED.caption", (key, file_id, file_type, caption))
+    conn.commit()
+    conn.close()
 
-async def db_save(key: str, file_id: str, file_type: str, caption: str = ""):
-    db = await get_db()
-    await db.execute("INSERT OR REPLACE INTO files (key, file_id, file_type, caption) VALUES (?,?,?,?)", (key, file_id, file_type, caption))
-    await db.commit()
+def db_delete(key: str):
+    conn = get_db_conn()
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM files WHERE key=%s", (key,))
+    conn.commit()
+    conn.close()
 
-async def db_delete(key: str):
-    db = await get_db()
-    await db.execute("DELETE FROM files WHERE key=?", (key,))
-    await db.commit()
+def db_list():
+    conn = get_db_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT key, file_type, caption, created_at FROM files ORDER BY created_at DESC")
+        rows = cur.fetchall()
+    conn.close()
+    return rows
 
-async def db_list():
-    db = await get_db()
-    async with db.execute("SELECT key, file_type, caption, created_at FROM files ORDER BY created_at DESC") as cur:
-        return await cur.fetchall()
-
+# ─── Bot Logic ───
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
@@ -141,13 +148,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if is_admin(user_id) and not args:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("➕ إضافة محتوى جديد", callback_data="admin:add")],[InlineKeyboardButton("📋 قائمة المحتويات", callback_data="admin:list")],[InlineKeyboardButton("🗑️ حذف محتوى", callback_data="admin:delete_menu")]])
-        await update.message.reply_text("🎛️ *لوحة التحكم*", parse_mode="Markdown", reply_markup=kb)
+        await update.message.reply_text("🎛️ *لوحة التحكم (Supabase)*", parse_mode="Markdown", reply_markup=kb)
         return
     if not args:
         await update.message.reply_text("👋 أهلاً بك في بوت Rax!\nاستخدم رابطاً خاصاً للحصول على الملفات.")
         return
     key = args[0]
-    row = await db_get(key)
+    row = db_get(key)
     if not row:
         await update.message.reply_text("❌ عذراً، هذا الرابط غير صالح أو تم حذفه.")
         return
@@ -168,7 +175,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if await check_subscription(user_id, context.bot):
             await query.answer("✅ تم التحقق بنجاح!")
             await query.message.delete()
-            row = await db_get(key)
+            row = db_get(key)
             if row: 
                 await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
                 await send_content(update.effective_chat.id, row, context)
@@ -182,26 +189,26 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🎛️ *لوحة التحكم*", reply_markup=kb)
     elif data == "admin:add":
         context.user_data["awaiting_file"] = True
-        await query.edit_message_text("📤 أرسل الآن أي (ملف، صورة، فيديو، أو مقطع صوتي) لإضافته:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
+        await query.edit_message_text("📤 أرسل الآن أي ملف لإضافته:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
     elif data == "admin:list":
-        rows = await db_list()
+        rows = db_list()
         if not rows:
-            await query.edit_message_text("📋 لا توجد ملفات مضافة حالياً.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
+            await query.edit_message_text("📋 لا توجد ملفات مضافة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
             return
         res = ["📋 *قائمة الملفات المضافة:*\n"]
         for r in rows: res.append(f"{type_emoji(r['file_type'])} `{r['key']}`\n🔗 {make_link(r['key'])}\n")
         await query.edit_message_text("\n".join(res), parse_mode="Markdown", disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
     elif data == "admin:delete_menu":
-        rows = await db_list()
+        rows = db_list()
         if not rows:
-            await query.edit_message_text("🗑️ لا توجد ملفات لحذفها.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
+            await query.edit_message_text("🗑️ لا توجد ملفات.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
             return
         btns = [[InlineKeyboardButton(f"{type_emoji(r['file_type'])} {r['key']}", callback_data=f"admin:del:{r['key']}")] for r in rows]
         btns.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")])
-        await query.edit_message_text("🗑️ اختر الملف الذي تريد حذفه نهائياً:", reply_markup=InlineKeyboardMarkup(btns))
+        await query.edit_message_text("🗑️ اختر الملف للحذف:", reply_markup=InlineKeyboardMarkup(btns))
     elif data.startswith("admin:del:"):
-        await db_delete(data.split("admin:del:", 1)[1])
-        await query.answer("✅ تم حذف الملف بنجاح")
+        db_delete(data.split("admin:del:", 1)[1])
+        await query.answer("✅ تم حذف الملف")
         await callback_handler(update, context)
 
 async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -215,17 +222,15 @@ async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif msg.audio: f_id, f_type = msg.audio.file_id, "audio"
     else: return
     key = hashlib.md5(f"{f_id}{time.time()}".encode()).hexdigest()[:8]
-    await db_save(key, f_id, f_type, msg.caption or "")
+    db_save(key, f_id, f_type, msg.caption or "")
     await msg.reply_text(f"✅ تم حفظ الملف بنجاح!\n\n🔗 رابط المشاركة:\n`{make_link(key)}`", parse_mode="Markdown")
 
 async def post_init(app: Application):
-    await db_init()
-    logger.info("🚀 Bot is ready.")
+    db_init()
+    logger.info("🚀 Bot is ready and connected to Supabase.")
 
 def main():
-    # Start health check server
     threading.Thread(target=run_health_server, daemon=True).start()
-    # Start keep-alive (self-ping) server
     threading.Thread(target=keep_alive, daemon=True).start()
 
     app = (

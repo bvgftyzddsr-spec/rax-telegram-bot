@@ -29,7 +29,8 @@ BOT_TOKEN     = "8707897595:AAHO2wpxyFcbb6mLrg0UjjpT1yP1T8G4qHY"
 CHANNEL_ID    = "@RaX_ViP"
 BOT_USERNAME  = "Raxdovipbot"
 ADMIN_IDS     = [5614356064]
-DATABASE_URL  = "postgresql://postgres:gta738945961@db.jsbxltfpogoiaqiwsevs.supabase.co:5432/postgres"
+# تم تحديث الرابط لضمان الاتصال الآمن (sslmode=require)
+DATABASE_URL  = "postgresql://postgres:gta738945961@db.jsbxltfpogoiaqiwsevs.supabase.co:5432/postgres?sslmode=require"
 PORT          = int(os.environ.get("PORT", 8080))
 APP_URL       = "https://rax-telegram-bot.onrender.com" 
 # ─────────────────────────────────────────────
@@ -45,7 +46,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is active and running with Link Support!")
+        self.wfile.write(b"Bot is active and running!")
 
 def run_health_server():
     try:
@@ -67,52 +68,73 @@ def keep_alive():
 
 # ─── Database Logic ───
 def get_db_conn():
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    # إضافة مهلة للاتصال لضمان عدم تعليق البوت
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor, connect_timeout=10)
 
 def db_init():
-    conn = get_db_conn()
-    with conn.cursor() as cur:
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS files (
-                key        TEXT PRIMARY KEY,
-                file_id    TEXT NOT NULL,
-                file_type  TEXT NOT NULL,
-                caption    TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-    conn.commit()
-    conn.close()
+    try:
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS files (
+                    key        TEXT PRIMARY KEY,
+                    file_id    TEXT NOT NULL,
+                    file_type  TEXT NOT NULL,
+                    caption    TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+        conn.commit()
+        conn.close()
+        logger.info("✅ Database initialized successfully.")
+    except Exception as e:
+        logger.error(f"❌ Database init error: {e}")
 
 def db_get(key: str):
-    conn = get_db_conn()
-    with conn.cursor() as cur:
-        cur.execute("SELECT file_id, file_type, caption FROM files WHERE key=%s", (key,))
-        row = cur.fetchone()
-    conn.close()
-    return row
+    try:
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT file_id, file_type, caption FROM files WHERE key=%s", (key,))
+            row = cur.fetchone()
+        conn.close()
+        return row
+    except Exception as e:
+        logger.error(f"Database get error: {e}")
+        return None
 
 def db_save(key: str, file_id: str, file_type: str, caption: str = ""):
-    conn = get_db_conn()
-    with conn.cursor() as cur:
-        cur.execute("INSERT INTO files (key, file_id, file_type, caption) VALUES (%s,%s,%s,%s) ON CONFLICT (key) DO UPDATE SET file_id=EXCLUDED.file_id, file_type=EXCLUDED.file_type, caption=EXCLUDED.caption", (key, file_id, file_type, caption))
-    conn.commit()
-    conn.close()
+    try:
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO files (key, file_id, file_type, caption) VALUES (%s,%s,%s,%s) ON CONFLICT (key) DO UPDATE SET file_id=EXCLUDED.file_id, file_type=EXCLUDED.file_type, caption=EXCLUDED.caption", (key, file_id, file_type, caption))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Database save error: {e}")
+        return False
 
 def db_delete(key: str):
-    conn = get_db_conn()
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM files WHERE key=%s", (key,))
-    conn.commit()
-    conn.close()
+    try:
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM files WHERE key=%s", (key,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Database delete error: {e}")
 
 def db_list():
-    conn = get_db_conn()
-    with conn.cursor() as cur:
-        cur.execute("SELECT key, file_type, caption, created_at FROM files ORDER BY created_at DESC")
-        rows = cur.fetchall()
-    conn.close()
-    return rows
+    try:
+        conn = get_db_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT key, file_type, caption, created_at FROM files ORDER BY created_at DESC")
+            rows = cur.fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        logger.error(f"Database list error: {e}")
+        return []
 
 # ─── Bot Logic ───
 def is_admin(user_id: int) -> bool:
@@ -232,18 +254,19 @@ async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f_id, f_type = text, "link"
             caption = ""
         else:
-            # إذا أرسل نصاً عادياً ليس رابطاً، نذكره بإرسال رابط أو ملف
             await msg.reply_text("⚠️ يرجى إرسال رابط صحيح (يبدأ بـ http أو https) أو ملف/فيديو/صورة.")
             return
     else: return
     
     key = hashlib.md5(f"{f_id}{time.time()}".encode()).hexdigest()[:8]
-    db_save(key, f_id, f_type, caption)
-    await msg.reply_text(f"✅ تم حفظ {f_type} بنجاح!\n\n🔗 رابط المشاركة:\n`{make_link(key)}`", parse_mode="Markdown")
+    if db_save(key, f_id, f_type, caption):
+        await msg.reply_text(f"✅ تم حفظ {f_type} بنجاح!\n\n🔗 رابط المشاركة:\n`{make_link(key)}`", parse_mode="Markdown")
+    else:
+        await msg.reply_text("❌ حدث خطأ أثناء الحفظ في قاعدة البيانات. حاول مرة أخرى.")
 
 async def post_init(app: Application):
     db_init()
-    logger.info("🚀 Bot is ready with Link Support.")
+    logger.info("🚀 Bot is ready.")
 
 def main():
     threading.Thread(target=run_health_server, daemon=True).start()

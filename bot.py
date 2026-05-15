@@ -29,8 +29,8 @@ BOT_TOKEN     = "8707897595:AAHO2wpxyFcbb6mLrg0UjjpT1yP1T8G4qHY"
 CHANNEL_ID    = "@RaX_ViP"
 BOT_USERNAME  = "Raxdovipbot"
 ADMIN_IDS     = [5614356064]
-# تم تحديث الرابط لضمان الاتصال الآمن (sslmode=require)
-DATABASE_URL  = "postgresql://postgres:gta738945961@db.jsbxltfpogoiaqiwsevs.supabase.co:5432/postgres?sslmode=require"
+# الرابط الجديد المتوافق مع IPv4 (Transaction Pooler)
+DATABASE_URL  = "postgresql://postgres.jsbxltfpogoiaqiwsevs:gta738945961@aws-0-eu-west-1.pooler.supabase.com:6543/postgres?sslmode=require"
 PORT          = int(os.environ.get("PORT", 8080))
 APP_URL       = "https://rax-telegram-bot.onrender.com" 
 # ─────────────────────────────────────────────
@@ -46,7 +46,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is active and running!")
+        self.wfile.write(b"Bot is active and running with IPv4 Supabase!")
 
 def run_health_server():
     try:
@@ -68,7 +68,6 @@ def keep_alive():
 
 # ─── Database Logic ───
 def get_db_conn():
-    # إضافة مهلة للاتصال لضمان عدم تعليق البوت
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor, connect_timeout=10)
 
 def db_init():
@@ -86,7 +85,7 @@ def db_init():
             """)
         conn.commit()
         conn.close()
-        logger.info("✅ Database initialized successfully.")
+        logger.info("✅ Database initialized successfully via IPv4 Pooler.")
     except Exception as e:
         logger.error(f"❌ Database init error: {e}")
 

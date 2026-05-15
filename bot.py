@@ -29,7 +29,6 @@ BOT_TOKEN     = "8707897595:AAHO2wpxyFcbb6mLrg0UjjpT1yP1T8G4qHY"
 CHANNEL_ID    = "@RaX_ViP"
 BOT_USERNAME  = "Raxdovipbot"
 ADMIN_IDS     = [5614356064]
-# رابط قاعدة بيانات Supabase مع كلمة المرور
 DATABASE_URL  = "postgresql://postgres:gta738945961@db.jsbxltfpogoiaqiwsevs.supabase.co:5432/postgres"
 PORT          = int(os.environ.get("PORT", 8080))
 APP_URL       = "https://rax-telegram-bot.onrender.com" 
@@ -46,7 +45,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is active and running with Supabase!")
+        self.wfile.write(b"Bot is active and running with Link Support!")
 
 def run_health_server():
     try:
@@ -66,7 +65,7 @@ def keep_alive():
         except Exception as e:
             logger.error(f"Keep-alive error: {e}")
 
-# ─── Database Logic (PostgreSQL / Supabase) ───
+# ─── Database Logic ───
 def get_db_conn():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
@@ -120,7 +119,8 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 def type_emoji(file_type: str) -> str:
-    return {"document": "📄", "photo": "🖼️", "video": "🎬", "audio": "🎵"}.get(file_type, "📎")
+    emojis = {"document": "📄", "photo": "🖼️", "video": "🎬", "audio": "🎵", "link": "🔗"}
+    return emojis.get(file_type, "📎")
 
 def make_link(key: str) -> str:
     return f"https://t.me/{BOT_USERNAME}?start={key}"
@@ -140,6 +140,10 @@ async def send_content(chat_id: int, row, context: ContextTypes.DEFAULT_TYPE):
         elif f_type == "photo": await context.bot.send_photo(chat_id=chat_id, photo=f_id, caption=cap)
         elif f_type == "video": await context.bot.send_video(chat_id=chat_id, video=f_id, caption=cap)
         elif f_type == "audio": await context.bot.send_audio(chat_id=chat_id, audio=f_id, caption=cap)
+        elif f_type == "link":
+            text = f"✅ *هذا هو رابط التحميل المباشر:*\n\n🔗 {f_id}"
+            if cap: text += f"\n\n📝 {cap}"
+            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", disable_web_page_preview=False)
     except Exception as e:
         logger.error(f"Send error: {e}")
 
@@ -148,10 +152,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if is_admin(user_id) and not args:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("➕ إضافة محتوى جديد", callback_data="admin:add")],[InlineKeyboardButton("📋 قائمة المحتويات", callback_data="admin:list")],[InlineKeyboardButton("🗑️ حذف محتوى", callback_data="admin:delete_menu")]])
-        await update.message.reply_text("🎛️ *لوحة التحكم (Supabase)*", parse_mode="Markdown", reply_markup=kb)
+        await update.message.reply_text("🎛️ *لوحة التحكم (Rax Bot)*", parse_mode="Markdown", reply_markup=kb)
         return
     if not args:
-        await update.message.reply_text("👋 أهلاً بك في بوت Rax!\nاستخدم رابطاً خاصاً للحصول على الملفات.")
+        await update.message.reply_text("👋 أهلاً بك في بوت Rax!\nاستخدم رابطاً خاصاً للحصول على الملفات أو الروابط.")
         return
     key = args[0]
     row = db_get(key)
@@ -189,26 +193,26 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🎛️ *لوحة التحكم*", reply_markup=kb)
     elif data == "admin:add":
         context.user_data["awaiting_file"] = True
-        await query.edit_message_text("📤 أرسل الآن أي ملف لإضافته:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
+        await query.edit_message_text("📤 أرسل الآن أي (ملف، صورة، فيديو، أو رابط نصي) لإضافته:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
     elif data == "admin:list":
         rows = db_list()
         if not rows:
             await query.edit_message_text("📋 لا توجد ملفات مضافة.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
             return
-        res = ["📋 *قائمة الملفات المضافة:*\n"]
+        res = ["📋 *قائمة المحتويات المضافة:*\n"]
         for r in rows: res.append(f"{type_emoji(r['file_type'])} `{r['key']}`\n🔗 {make_link(r['key'])}\n")
         await query.edit_message_text("\n".join(res), parse_mode="Markdown", disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
     elif data == "admin:delete_menu":
         rows = db_list()
         if not rows:
-            await query.edit_message_text("🗑️ لا توجد ملفات.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
+            await query.edit_message_text("🗑️ لا توجد محتويات.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")]]))
             return
         btns = [[InlineKeyboardButton(f"{type_emoji(r['file_type'])} {r['key']}", callback_data=f"admin:del:{r['key']}")] for r in rows]
         btns.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin:main")])
-        await query.edit_message_text("🗑️ اختر الملف للحذف:", reply_markup=InlineKeyboardMarkup(btns))
+        await query.edit_message_text("🗑️ اختر للحذف النهائي:", reply_markup=InlineKeyboardMarkup(btns))
     elif data.startswith("admin:del:"):
         db_delete(data.split("admin:del:", 1)[1])
-        await query.answer("✅ تم حذف الملف")
+        await query.answer("✅ تم الحذف بنجاح")
         await callback_handler(update, context)
 
 async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -216,18 +220,28 @@ async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(user_id) or not context.user_data.get("awaiting_file"): return
     context.user_data["awaiting_file"] = False
     msg = update.message
+    f_id, f_type, caption = None, None, msg.caption or ""
+    
     if msg.document: f_id, f_type = msg.document.file_id, "document"
     elif msg.photo: f_id, f_type = msg.photo[-1].file_id, "photo"
     elif msg.video: f_id, f_type = msg.video.file_id, "video"
     elif msg.audio: f_id, f_type = msg.audio.file_id, "audio"
+    elif msg.text:
+        if msg.text.startswith(("http://", "https://", "www.")):
+            f_id, f_type = msg.text, "link"
+            caption = "" # في الروابط النصية لا يوجد كابشن منفصل عادة
+        else:
+            await msg.reply_text("⚠️ يرجى إرسال رابط صحيح (يبدأ بـ http أو https).")
+            return
     else: return
+    
     key = hashlib.md5(f"{f_id}{time.time()}".encode()).hexdigest()[:8]
-    db_save(key, f_id, f_type, msg.caption or "")
-    await msg.reply_text(f"✅ تم حفظ الملف بنجاح!\n\n🔗 رابط المشاركة:\n`{make_link(key)}`", parse_mode="Markdown")
+    db_save(key, f_id, f_type, caption)
+    await msg.reply_text(f"✅ تم حفظ {f_type} بنجاح!\n\n🔗 رابط المشاركة:\n`{make_link(key)}`", parse_mode="Markdown")
 
 async def post_init(app: Application):
     db_init()
-    logger.info("🚀 Bot is ready and connected to Supabase.")
+    logger.info("🚀 Bot is ready with Link Support.")
 
 def main():
     threading.Thread(target=run_health_server, daemon=True).start()
@@ -246,7 +260,7 @@ def main():
     
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CallbackQueryHandler(callback_handler))
-    app.add_handler(MessageHandler((filters.Document.ALL | filters.PHOTO | filters.VIDEO | filters.AUDIO) & filters.ChatType.PRIVATE, receive_media))
+    app.add_handler(MessageHandler((filters.Document.ALL | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.TEXT) & filters.ChatType.PRIVATE, receive_media))
     
     logger.info("🤖 Starting bot polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

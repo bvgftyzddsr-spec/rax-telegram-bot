@@ -29,8 +29,7 @@ BOT_TOKEN     = "8707897595:AAHO2wpxyFcbb6mLrg0UjjpT1yP1T8G4qHY"
 CHANNEL_ID    = "@RaX_ViP"
 BOT_USERNAME  = "Raxdovipbot"
 ADMIN_IDS     = [5614356064]
-# الرابط الجديد المتوافق مع IPv4 (Transaction Pooler)
-DATABASE_URL  = "postgresql://postgres.jsbxltfpogoiaqiwsevs:gta738945961@aws-0-eu-west-1.pooler.supabase.com:6543/postgres?sslmode=require"
+DATABASE_URL  = "postgresql://postgres.jsbxltfpogoiaqiwsevs:gta738945961@aws-0-eu-west-1.pooler.supabase.co:6543/postgres?sslmode=require"
 PORT          = int(os.environ.get("PORT", 8080))
 APP_URL       = "https://rax-telegram-bot.onrender.com" 
 # ─────────────────────────────────────────────
@@ -46,7 +45,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is active and running with IPv4 Supabase!")
+        self.wfile.write(b"Bot is active and running!")
 
 def run_health_server():
     try:
@@ -66,71 +65,76 @@ def keep_alive():
         except Exception as e:
             logger.error(f"Keep-alive error: {e}")
 
-# ─── Database Logic ───
+# ─── Database Logic with Retries ───
 def get_db_conn():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor, connect_timeout=10)
 
+def db_execute(func, *args, retries=3):
+    """دالة مساعدة لإعادة المحاولة تلقائياً في حال فشل الاتصال"""
+    for i in range(retries):
+        try:
+            conn = get_db_conn()
+            with conn.cursor() as cur:
+                result = func(cur, *args)
+            conn.commit()
+            conn.close()
+            return result
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            logger.warning(f"⚠️ Database retry {i+1}/{retries} due to error: {e}")
+            if i == retries - 1: raise e
+            time.sleep(1) # Wait before retry
+
 def db_init():
+    def _init(cur):
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS files (
+                key        TEXT PRIMARY KEY,
+                file_id    TEXT NOT NULL,
+                file_type  TEXT NOT NULL,
+                caption    TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
     try:
-        conn = get_db_conn()
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS files (
-                    key        TEXT PRIMARY KEY,
-                    file_id    TEXT NOT NULL,
-                    file_type  TEXT NOT NULL,
-                    caption    TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-        conn.commit()
-        conn.close()
-        logger.info("✅ Database initialized successfully via IPv4 Pooler.")
+        db_execute(_init)
+        logger.info("✅ Database initialized successfully.")
     except Exception as e:
         logger.error(f"❌ Database init error: {e}")
 
 def db_get(key: str):
+    def _get(cur, k):
+        cur.execute("SELECT file_id, file_type, caption FROM files WHERE key=%s", (k,))
+        return cur.fetchone()
     try:
-        conn = get_db_conn()
-        with conn.cursor() as cur:
-            cur.execute("SELECT file_id, file_type, caption FROM files WHERE key=%s", (key,))
-            row = cur.fetchone()
-        conn.close()
-        return row
+        return db_execute(_get, key)
     except Exception as e:
         logger.error(f"Database get error: {e}")
         return None
 
 def db_save(key: str, file_id: str, file_type: str, caption: str = ""):
-    try:
-        conn = get_db_conn()
-        with conn.cursor() as cur:
-            cur.execute("INSERT INTO files (key, file_id, file_type, caption) VALUES (%s,%s,%s,%s) ON CONFLICT (key) DO UPDATE SET file_id=EXCLUDED.file_id, file_type=EXCLUDED.file_type, caption=EXCLUDED.caption", (key, file_id, file_type, caption))
-        conn.commit()
-        conn.close()
+    def _save(cur, k, fid, ftype, cap):
+        cur.execute("INSERT INTO files (key, file_id, file_type, caption) VALUES (%s,%s,%s,%s) ON CONFLICT (key) DO UPDATE SET file_id=EXCLUDED.file_id, file_type=EXCLUDED.file_type, caption=EXCLUDED.caption", (k, fid, ftype, cap))
         return True
+    try:
+        return db_execute(_save, key, file_id, file_type, caption)
     except Exception as e:
         logger.error(f"Database save error: {e}")
         return False
 
 def db_delete(key: str):
+    def _del(cur, k):
+        cur.execute("DELETE FROM files WHERE key=%s", (k,))
     try:
-        conn = get_db_conn()
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM files WHERE key=%s", (key,))
-        conn.commit()
-        conn.close()
+        db_execute(_del, key)
     except Exception as e:
         logger.error(f"Database delete error: {e}")
 
 def db_list():
+    def _list(cur):
+        cur.execute("SELECT key, file_type, caption, created_at FROM files ORDER BY created_at DESC")
+        return cur.fetchall()
     try:
-        conn = get_db_conn()
-        with conn.cursor() as cur:
-            cur.execute("SELECT key, file_type, caption, created_at FROM files ORDER BY created_at DESC")
-            rows = cur.fetchall()
-        conn.close()
-        return rows
+        return db_execute(_list)
     except Exception as e:
         logger.error(f"Database list error: {e}")
         return []
@@ -178,14 +182,20 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not args:
         await update.message.reply_text("👋 أهلاً بك في بوت Rax!\nاستخدم رابطاً خاصاً للحصول على الملفات أو الروابط.")
         return
+    
     key = args[0]
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    
     row = db_get(key)
     if not row:
-        await update.message.reply_text("❌ عذراً، هذا الرابط غير صالح أو تم حذفه.")
-        return
+        # إذا فشل الجلب، نحاول مرة أخيرة بعد ثانية
+        time.sleep(1)
+        row = db_get(key)
+        if not row:
+            await update.message.reply_text("❌ عذراً، هذا الرابط غير صالح حالياً. يرجى المحاولة مرة أخرى بعد لحظات.")
+            return
     
     if await check_subscription(user_id, context.bot):
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
         await send_content(update.effective_chat.id, row, context)
     else:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك في القناة", url=f"https://t.me/{CHANNEL_ID.lstrip('@')}")],[InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data=f"verify:{key}")]])

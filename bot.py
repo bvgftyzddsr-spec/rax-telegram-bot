@@ -227,11 +227,13 @@ async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif msg.video: f_id, f_type = msg.video.file_id, "video"
     elif msg.audio: f_id, f_type = msg.audio.file_id, "audio"
     elif msg.text:
-        if msg.text.startswith(("http://", "https://", "www.")):
-            f_id, f_type = msg.text, "link"
-            caption = "" # في الروابط النصية لا يوجد كابشن منفصل عادة
+        text = msg.text.strip()
+        if text.startswith(("http://", "https://", "www.")):
+            f_id, f_type = text, "link"
+            caption = ""
         else:
-            await msg.reply_text("⚠️ يرجى إرسال رابط صحيح (يبدأ بـ http أو https).")
+            # إذا أرسل نصاً عادياً ليس رابطاً، نذكره بإرسال رابط أو ملف
+            await msg.reply_text("⚠️ يرجى إرسال رابط صحيح (يبدأ بـ http أو https) أو ملف/فيديو/صورة.")
             return
     else: return
     

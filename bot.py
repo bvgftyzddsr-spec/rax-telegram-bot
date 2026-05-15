@@ -5,6 +5,7 @@ import asyncio
 import aiosqlite
 import os
 import threading
+import requests
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import (
     Update,
@@ -22,7 +23,7 @@ from telegram.ext import (
 )
 
 # ─────────────────────────────────────────────
-# ⚙️  CONFIG (Original User Settings)
+# ⚙️  CONFIG
 # ─────────────────────────────────────────────
 BOT_TOKEN     = "8707897595:AAHO2wpxyFcbb6mLrg0UjjpT1yP1T8G4qHY"
 CHANNEL_ID    = "@RaX_ViP"
@@ -30,6 +31,8 @@ BOT_USERNAME  = "Raxdovipbot"
 ADMIN_IDS     = [5614356064]
 DB_PATH       = "bot_files.db"
 PORT          = int(os.environ.get("PORT", 8080))
+# اسم الرابط الخاص بك على Render (سيتم استخدامه لمنع النوم)
+APP_URL       = "https://rax-telegram-bot.onrender.com" 
 # ─────────────────────────────────────────────
 
 logging.basicConfig(
@@ -52,6 +55,17 @@ def run_health_server():
         server.serve_forever()
     except Exception as e:
         logger.error(f"Health server error: {e}")
+
+# ─── Keep-Alive Logic (Self-Ping) ───
+def keep_alive():
+    """تقوم هذه الدالة بزيارة الرابط كل 10 دقائق لمنع Render من إدخال البوت في وضع النوم"""
+    while True:
+        try:
+            time.sleep(600) # 10 minutes
+            requests.get(APP_URL)
+            logger.info("📡 Self-ping sent to keep the bot awake.")
+        except Exception as e:
+            logger.error(f"Keep-alive error: {e}")
 
 db_connection = None
 
@@ -206,13 +220,14 @@ async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(app: Application):
     await db_init()
-    logger.info("🚀 Bot is ready and database initialized.")
+    logger.info("🚀 Bot is ready.")
 
 def main():
-    # Start the health check server for Render compatibility
+    # Start health check server
     threading.Thread(target=run_health_server, daemon=True).start()
+    # Start keep-alive (self-ping) server
+    threading.Thread(target=keep_alive, daemon=True).start()
 
-    # Using a very stable configuration for Render environment
     app = (
         Application.builder()
         .token(BOT_TOKEN)

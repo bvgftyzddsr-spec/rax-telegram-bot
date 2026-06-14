@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 
 def get_db_conn():
     try:
-        # Use a timeout and ensure SSL is forced
         conn = psycopg2.connect(DATABASE_URL, sslmode='require', connect_timeout=5)
         return conn
     except Exception as e:
@@ -40,19 +39,29 @@ def init_db():
     conn = get_db_conn()
     if conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS files (
-                    id SERIAL PRIMARY KEY,
-                    key TEXT UNIQUE,
-                    file_id TEXT,
-                    file_type TEXT,
-                    caption TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+            # Malicious actor might have messed with table names or column names. 
+            # We ensure the table has BOTH possible column names just in case.
+            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
+            cols = [c[0] for c in cur.fetchall()]
+            
+            if 'file_key' not in cols and 'key' in cols:
+                logger.info("ℹ️ Database uses 'key' column.")
+            elif 'key' not in cols and 'file_key' in cols:
+                logger.info("ℹ️ Database uses 'file_key' column.")
+            elif not cols:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS files (
+                        id SERIAL PRIMARY KEY,
+                        key TEXT UNIQUE,
+                        file_id TEXT,
+                        file_type TEXT,
+                        caption TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
             conn.commit()
         conn.close()
-        logger.info("✅ Database initialized successfully.")
+        logger.info("✅ Database check complete.")
 
 # ─────────────────────────────────────────────
 # 🔍 SUBSCRIPTION LOGIC
@@ -81,8 +90,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if args:
-        file_key = args[0].strip() # Clean the key
-        logger.info(f"🔍 Processing file request for key: {file_key}")
+        file_key = args[0].strip()
+        logger.info(f"📥 New Request: User {user_id} is asking for key: [{file_key}]")
         if await check_subscription(user_id, context.bot):
             await process_file_request(update, context, file_key)
         else:
@@ -104,7 +113,14 @@ async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYP
     row = None
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM files WHERE key = %s", (file_key,))
+            # Check which column exists and query accordingly
+            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
+            cols = [c['column_name'] for c in cur.fetchall()]
+            
+            if 'key' in cols:
+                cur.execute("SELECT * FROM files WHERE key = %s", (file_key,))
+            else:
+                cur.execute("SELECT * FROM files WHERE file_key = %s", (file_key,))
             row = cur.fetchone()
     except Exception as e:
         logger.error(f"❌ Query Error: {e}")
@@ -124,6 +140,7 @@ async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.error(f"❌ Send Error: {e}")
             await context.bot.send_message(chat_id, "❌ حدث خطأ أثناء إرسال الملف.")
     else:
+        logger.warning(f"⚠️ Key not found in DB: {file_key}")
         await update.effective_chat.send_message("❌ الرابط غير صالح أو تم حذفه.")
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -159,7 +176,10 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         if conn:
             try:
                 with conn.cursor() as cur:
-                    cur.execute("INSERT INTO files (key, file_id, file_type, caption) VALUES (%s, %s, %s, %s)", (file_key, f_id, f_type, cap))
+                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
+                    cols = [c[0] for c in cur.fetchall()]
+                    col_name = 'key' if 'key' in cols else 'file_key'
+                    cur.execute(f"INSERT INTO files ({col_name}, file_id, file_type, caption) VALUES (%s, %s, %s, %s)", (file_key, f_id, f_type, cap))
                     conn.commit()
                 link = f"https://t.me/{BOT_USERNAME}?start={file_key}"
                 await msg.reply_text(f"✅ تم الحفظ بنجاح!\n\n🔗 الرابط الخاص بك هو:\n`{link}`", parse_mode='Markdown')

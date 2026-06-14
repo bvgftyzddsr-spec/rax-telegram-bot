@@ -39,18 +39,10 @@ def init_db():
     conn = get_db_conn()
     if conn:
         with conn.cursor() as cur:
-            # Malicious actor might have messed with table names or column names. 
-            # We ensure the table has BOTH possible column names just in case.
-            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
-            cols = [c[0] for c in cur.fetchall()]
-            
-            if 'file_key' not in cols and 'key' in cols:
-                logger.info("ℹ️ Database uses 'key' column.")
-            elif 'key' not in cols and 'file_key' in cols:
-                logger.info("ℹ️ Database uses 'file_key' column.")
-            elif not cols:
+            cur.execute("SELECT table_name FROM information_schema.tables WHERE table_name = 'files'")
+            if not cur.fetchone():
                 cur.execute("""
-                    CREATE TABLE IF NOT EXISTS files (
+                    CREATE TABLE files (
                         id SERIAL PRIMARY KEY,
                         key TEXT UNIQUE,
                         file_id TEXT,
@@ -85,13 +77,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
 
     if not args and user_id in ADMIN_IDS:
-        keyboard = [[InlineKeyboardButton("➕ إضافة محتوى جديد", callback_data="add_new")]]
+        keyboard = [
+            [InlineKeyboardButton("➕ إضافة محتوى جديد", callback_data="add_new")],
+            [InlineKeyboardButton("📋 قائمة المحتويات", callback_data="list_content")]
+        ]
         await update.message.reply_text("👋 أهلاً بك يا مدير! هذه لوحة التحكم الخاصة بك:", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     if args:
         file_key = args[0].strip()
-        logger.info(f"📥 New Request: User {user_id} is asking for key: [{file_key}]")
         if await check_subscription(user_id, context.bot):
             await process_file_request(update, context, file_key)
         else:
@@ -106,24 +100,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYPE, file_key: str):
     conn = get_db_conn()
-    if not conn: 
-        await update.effective_chat.send_message("❌ حدث خطأ في الاتصال بقاعدة البيانات.")
-        return
-        
+    if not conn: return
     row = None
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            # Check which column exists and query accordingly
             cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
             cols = [c['column_name'] for c in cur.fetchall()]
-            
-            if 'key' in cols:
-                cur.execute("SELECT * FROM files WHERE key = %s", (file_key,))
-            else:
-                cur.execute("SELECT * FROM files WHERE file_key = %s", (file_key,))
+            col_name = 'key' if 'key' in cols else 'file_key'
+            cur.execute(f"SELECT * FROM files WHERE {col_name} = %s", (file_key,))
             row = cur.fetchone()
-    except Exception as e:
-        logger.error(f"❌ Query Error: {e}")
     finally:
         conn.close()
 
@@ -136,20 +121,54 @@ async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYP
             elif f_type == 'audio': await context.bot.send_audio(chat_id, f_id, caption=cap)
             elif f_type == 'document': await context.bot.send_document(chat_id, f_id, caption=cap)
             elif f_type == 'link': await context.bot.send_message(chat_id, f"🔗 **رابط التحميل المباشر:**\n\n{f_id}\n\n{cap}", parse_mode='Markdown')
-        except Exception as e:
-            logger.error(f"❌ Send Error: {e}")
+        except Exception:
             await context.bot.send_message(chat_id, "❌ حدث خطأ أثناء إرسال الملف.")
     else:
-        logger.warning(f"⚠️ Key not found in DB: {file_key}")
         await update.effective_chat.send_message("❌ الرابط غير صالح أو تم حذفه.")
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     data = query.data
+
     if data == "add_new":
         context.user_data['waiting_for_file'] = True
         await query.edit_message_text("📥 أرسل الآن أي (ملف، صورة، فيديو، أو رابط نصي) لإضافته:")
+    
+    elif data == "list_content":
+        if user_id not in ADMIN_IDS: return
+        conn = get_db_conn()
+        if not conn: return
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
+                cols = [c['column_name'] for c in cur.fetchall()]
+                col_name = 'key' if 'key' in cols else 'file_key'
+                cur.execute(f"SELECT {col_name}, file_type, caption FROM files ORDER BY created_at DESC LIMIT 50")
+                rows = cur.fetchall()
+            
+            if not rows:
+                await query.edit_message_text("📭 لا يوجد محتوى مضاف حالياً.")
+            else:
+                text = "📋 **قائمة آخر 50 محتوى مضاف:**\n\n"
+                for row in rows:
+                    key = row[col_name]
+                    f_type = row['file_type']
+                    cap = (row['caption'][:20] + "...") if row['caption'] and len(row['caption']) > 20 else (row['caption'] or "بدون وصف")
+                    text += f"🔹 `{key}` | {f_type} | {cap}\n"
+                
+                keyboard = [[InlineKeyboardButton("🔙 عودة", callback_data="back_to_admin")]]
+                await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        finally:
+            conn.close()
+
+    elif data == "back_to_admin":
+        keyboard = [
+            [InlineKeyboardButton("➕ إضافة محتوى جديد", callback_data="add_new")],
+            [InlineKeyboardButton("📋 قائمة المحتويات", callback_data="list_content")]
+        ]
+        await query.edit_message_text("👋 أهلاً بك يا مدير! هذه لوحة التحكم الخاصة بك:", reply_markup=InlineKeyboardMarkup(keyboard))
+
     elif data.startswith("check_"):
         file_key = data.replace("check_", "").strip()
         if await check_subscription(user_id, context.bot):
@@ -184,17 +203,11 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
                 link = f"https://t.me/{BOT_USERNAME}?start={file_key}"
                 await msg.reply_text(f"✅ تم الحفظ بنجاح!\n\n🔗 الرابط الخاص بك هو:\n`{link}`", parse_mode='Markdown')
                 context.user_data['waiting_for_file'] = False
-            except Exception as e:
-                logger.error(f"❌ Insert Error: {e}")
-                await msg.reply_text("❌ حدث خطأ أثناء الحفظ في قاعدة البيانات.")
             finally:
                 conn.close()
     else:
         await msg.reply_text("❌ عذراً، يجب إرسال ملف أو رابط صالح.")
 
-# ─────────────────────────────────────────────
-# 🌐 HEALTH CHECK SERVER (For Render)
-# ─────────────────────────────────────────────
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -205,12 +218,8 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 def run_health_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    logger.info(f"🌐 Health check server started on port {port}")
     server.serve_forever()
 
-# ─────────────────────────────────────────────
-# 🚀 MAIN
-# ─────────────────────────────────────────────
 def main():
     init_db()
     threading.Thread(target=run_health_server, daemon=True).start()
@@ -218,7 +227,6 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_admin_upload))
-    logger.info("🚀 Bot is running...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':

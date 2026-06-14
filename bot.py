@@ -29,7 +29,8 @@ logger = logging.getLogger(__name__)
 
 def get_db_conn():
     try:
-        conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+        # Use a timeout and ensure SSL is forced
+        conn = psycopg2.connect(DATABASE_URL, sslmode='require', connect_timeout=5)
         return conn
     except Exception as e:
         logger.error(f"❌ DB Connection Error: {e}")
@@ -80,7 +81,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if args:
-        file_key = args[0]
+        file_key = args[0].strip() # Clean the key
+        logger.info(f"🔍 Processing file request for key: {file_key}")
         if await check_subscription(user_id, context.bot):
             await process_file_request(update, context, file_key)
         else:
@@ -95,11 +97,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYPE, file_key: str):
     conn = get_db_conn()
-    if not conn: return
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("SELECT * FROM files WHERE key = %s", (file_key,))
-        row = cur.fetchone()
-    conn.close()
+    if not conn: 
+        await update.effective_chat.send_message("❌ حدث خطأ في الاتصال بقاعدة البيانات.")
+        return
+        
+    row = None
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM files WHERE key = %s", (file_key,))
+            row = cur.fetchone()
+    except Exception as e:
+        logger.error(f"❌ Query Error: {e}")
+    finally:
+        conn.close()
 
     if row:
         f_id, f_type, cap = row['file_id'], row['file_type'], row['caption'] or ""
@@ -110,7 +120,8 @@ async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYP
             elif f_type == 'audio': await context.bot.send_audio(chat_id, f_id, caption=cap)
             elif f_type == 'document': await context.bot.send_document(chat_id, f_id, caption=cap)
             elif f_type == 'link': await context.bot.send_message(chat_id, f"🔗 **رابط التحميل المباشر:**\n\n{f_id}\n\n{cap}", parse_mode='Markdown')
-        except Exception:
+        except Exception as e:
+            logger.error(f"❌ Send Error: {e}")
             await context.bot.send_message(chat_id, "❌ حدث خطأ أثناء إرسال الملف.")
     else:
         await update.effective_chat.send_message("❌ الرابط غير صالح أو تم حذفه.")
@@ -123,7 +134,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['waiting_for_file'] = True
         await query.edit_message_text("📥 أرسل الآن أي (ملف، صورة، فيديو، أو رابط نصي) لإضافته:")
     elif data.startswith("check_"):
-        file_key = data.replace("check_", "")
+        file_key = data.replace("check_", "").strip()
         if await check_subscription(user_id, context.bot):
             await query.answer("✅ تم التحقق بنجاح!")
             await query.delete_message()
@@ -146,13 +157,18 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         file_key = str(uuid.uuid4())[:8]
         conn = get_db_conn()
         if conn:
-            with conn.cursor() as cur:
-                cur.execute("INSERT INTO files (key, file_id, file_type, caption) VALUES (%s, %s, %s, %s)", (file_key, f_id, f_type, cap))
-                conn.commit()
-            conn.close()
-            link = f"https://t.me/{BOT_USERNAME}?start={file_key}"
-            await msg.reply_text(f"✅ تم الحفظ بنجاح!\n\n🔗 الرابط الخاص بك هو:\n`{link}`", parse_mode='Markdown')
-            context.user_data['waiting_for_file'] = False
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("INSERT INTO files (key, file_id, file_type, caption) VALUES (%s, %s, %s, %s)", (file_key, f_id, f_type, cap))
+                    conn.commit()
+                link = f"https://t.me/{BOT_USERNAME}?start={file_key}"
+                await msg.reply_text(f"✅ تم الحفظ بنجاح!\n\n🔗 الرابط الخاص بك هو:\n`{link}`", parse_mode='Markdown')
+                context.user_data['waiting_for_file'] = False
+            except Exception as e:
+                logger.error(f"❌ Insert Error: {e}")
+                await msg.reply_text("❌ حدث خطأ أثناء الحفظ في قاعدة البيانات.")
+            finally:
+                conn.close()
     else:
         await msg.reply_text("❌ عذراً، يجب إرسال ملف أو رابط صالح.")
 
@@ -177,14 +193,11 @@ def run_health_server():
 # ─────────────────────────────────────────────
 def main():
     init_db()
-    # Start health check server in a separate thread
     threading.Thread(target=run_health_server, daemon=True).start()
-    
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_admin_upload))
-    
     logger.info("🚀 Bot is running...")
     app.run_polling(drop_pending_updates=True)
 

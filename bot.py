@@ -19,14 +19,13 @@ from telegram.ext import (
     MessageHandler,
     ContextTypes,
     filters,
-    ChatMemberHandler,
 )
 
 # ─────────────────────────────────────────────
 # ⚙️  CONFIG
 # ─────────────────────────────────────────────
 BOT_TOKEN     = "8707897595:AAEBn6bouINACa7IzhB3Ih1-gn8lESkvk3o"
-CHANNELS      = ["@RaX_ViP", "@RaX_ViP2"] # القنوات المطلوبة
+CHANNELS      = ["@RaX_ViP", "@RaX_ViP2"]
 BOT_USERNAME  = "Raxdovipbot"
 ADMIN_IDS     = [5614356064]
 CHANNEL_FOR_STORAGE_ID = -1003900251919
@@ -73,14 +72,6 @@ async def db_init():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    # جدول لتتبع تفاعلات المستخدمين
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS user_reactions (
-            user_id    INTEGER PRIMARY KEY,
-            reacted    INTEGER DEFAULT 0,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
     async with db.execute("PRAGMA table_info(files)") as cursor:
         columns = [row[1] for row in await cursor.fetchall()]
         if 'url' not in columns:
@@ -104,18 +95,6 @@ async def db_save(key: str, file_id: str, file_type: str, caption: str = "", url
             logger.info(f"✅ Backup sent for {key}")
         except Exception as e:
             logger.error(f"Backup error: {e}")
-
-async def db_update_reaction(user_id: int):
-    db = await get_db()
-    await db.execute("INSERT OR REPLACE INTO user_reactions (user_id, reacted) VALUES (?, 1)", (user_id,))
-    await db.commit()
-
-async def db_check_reaction(user_id: int) -> bool:
-    if user_id in ADMIN_IDS: return True
-    db = await get_db()
-    async with db.execute("SELECT reacted FROM user_reactions WHERE user_id=?", (user_id,)) as cur:
-        row = await cur.fetchone()
-        return row and row[0] == 1
 
 async def db_delete(key: str):
     db = await get_db()
@@ -174,35 +153,16 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ الرابط غير صالح.")
         return
     
-    is_subbed = await check_subscription(user_id, context.bot)
-    has_reacted = await db_check_reaction(user_id)
-    
-    if is_subbed and has_reacted:
+    if await check_subscription(user_id, context.bot):
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
         await send_content(update.effective_chat.id, row, context)
     else:
-        msg = "🔒 *للحصول على المحتوى يجب إكمال الشروط التالية:*\n\n"
+        msg = "🔒 *للحصول على المحتوى يجب الاشتراك في القنوات أولاً:*\n\n"
         btns = []
-        if not is_subbed:
-            msg += "1️⃣ الاشتراك في القنوات المطلوبة.\n"
-            for i, channel in enumerate(CHANNELS, 1):
-                btns.append([InlineKeyboardButton(f"📢 قناة رقم {i}", url=f"https://t.me/{channel.lstrip('@')}")])
-        
-        if not has_reacted:
-            msg += f"2️⃣ التفاعل بإيموجي (Reaction) على أي منشور في قناة {CHANNELS[0]}.\n"
-            if not any(btn[0].text.startswith("📢 قناة رقم 1") for btn in btns):
-                btns.append([InlineKeyboardButton(f"🔗 اذهب للقناة للتفاعل", url=f"https://t.me/{CHANNELS[0].lstrip('@')}")])
-        
-        btns.append([InlineKeyboardButton("✅ تحقق من الشروط", callback_data=f"verify:{key}")])
+        for i, channel in enumerate(CHANNELS, 1):
+            btns.append([InlineKeyboardButton(f"📢 قناة رقم {i}", url=f"https://t.me/{channel.lstrip('@')}")])
+        btns.append([InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data=f"verify:{key}")])
         await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
-
-async def handle_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """رصد التفاعلات في القناة"""
-    reaction = update.message_reaction
-    if reaction and reaction.chat.username and f"@{reaction.chat.username}" == CHANNELS[0]:
-        user_id = reaction.user.id
-        await db_update_reaction(user_id)
-        logger.info(f"✨ User {user_id} reacted in {CHANNELS[0]}")
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -210,10 +170,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if data.startswith("verify:"):
         key = data.split(":", 1)[1]
-        is_subbed = await check_subscription(user_id, context.bot)
-        has_reacted = await db_check_reaction(user_id)
-        
-        if is_subbed and has_reacted:
+        if await check_subscription(user_id, context.bot):
             await query.answer("✅ تم التحقق بنجاح!")
             await query.message.delete()
             row = await db_get(key)
@@ -221,10 +178,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
                 await send_content(update.effective_chat.id, row, context)
         else:
-            msg = "⚠️ لم تكمل الشروط بعد!"
-            if not is_subbed: msg += "\n- يرجى الاشتراك في القنوات."
-            if not has_reacted: msg += f"\n- يرجى التفاعل في قناة {CHANNELS[0]}."
-            await query.answer(msg, show_alert=True)
+            await query.answer("⚠️ لم تشترك في جميع القنوات بعد!", show_alert=True)
         return
     if not is_admin(user_id): return
     await query.answer()
@@ -282,7 +236,7 @@ async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(app: Application):
     await db_init()
-    logger.info("🚀 البوت جاهز للعمل مع نظام القناتين والتفاعل")
+    logger.info("🚀 البوت جاهز للعمل بالحالة المستقرة")
 
 def main():
     threading.Thread(target=run_health_server, daemon=True).start()
@@ -295,11 +249,6 @@ def main():
     )
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CallbackQueryHandler(callback_handler))
-    # مراقب التفاعلات
-    app.add_handler(ChatMemberHandler(handle_reaction, ChatMemberHandler.MY_CHAT_MEMBER)) # This is for bot membership, we need message_reaction
-    from telegram.ext import MessageReactionHandler
-    app.add_handler(MessageReactionHandler(handle_reaction))
-    
     app.add_handler(MessageHandler((filters.Document.ALL | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.TEXT) & filters.ChatType.PRIVATE, receive_media))
     
     logger.info("🤖 بدء تشغيل البوت...")

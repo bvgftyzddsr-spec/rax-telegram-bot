@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
 
 # ─────────────────────────────────────────────
-# ⚙️  CONFIG (RESTORED & SECURED)
+# ⚙️  CONFIG (STABLE & SECURE)
 # ─────────────────────────────────────────────
 BOT_TOKEN     = "8707897595:AAGPh91nAAZ5LOaLaGffQ-a29R5V19Pj8ew"
 CHANNELS      = ["@RaX_ViP", "@RaX_ViP2"]
@@ -22,18 +22,20 @@ ADMIN_IDS     = [5614356064]
 DATABASE_URL  = "postgresql://postgres.jsbxltfpogoiaqiwsevs:gta738945961@aws-0-eu-west-1.pooler.supabase.com:6543/postgres?sslmode=require"
 
 # ─────────────────────────────────────────────
-# 🛠️ LOGGING & DB
+# 🛠️ LOGGING & STABILITY
 # ─────────────────────────────────────────────
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def get_db_conn():
-    try:
-        conn = psycopg2.connect(DATABASE_URL, sslmode='require', connect_timeout=10)
-        return conn
-    except Exception as e:
-        logger.error(f"❌ DB Connection Error: {e}")
-        return None
+    for _ in range(3): # Retry logic for stability
+        try:
+            conn = psycopg2.connect(DATABASE_URL, sslmode='require', connect_timeout=10)
+            return conn
+        except Exception as e:
+            logger.error(f"⚠️ DB Connection Retry: {e}")
+            time.sleep(1)
+    return None
 
 def init_db():
     conn = get_db_conn()
@@ -87,7 +89,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if args:
         file_key = args[0].strip()
-        logger.info(f"🔍 Request for key: {file_key}")
         if await check_subscription(user_id, context.bot):
             await process_file_request(update, context, file_key)
         else:
@@ -102,24 +103,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYPE, file_key: str):
     conn = get_db_conn()
-    if not conn: 
-        await update.effective_chat.send_message("❌ خطأ في الاتصال بقاعدة البيانات.")
-        return
-        
+    if not conn: return
+    
     row = None
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            # Check all columns for the key, case-insensitive
             cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
             cols = [c['column_name'] for c in cur.fetchall()]
             
-            if 'key' in cols:
-                cur.execute("SELECT * FROM files WHERE LOWER(key) = LOWER(%s)", (file_key,))
+            # Search in all possible key columns, case-insensitive
+            search_cols = [col for col in cols if col in ['key', 'file_key']]
+            for col in search_cols:
+                cur.execute(f"SELECT * FROM files WHERE LOWER({col}) = LOWER(%s)", (file_key,))
                 row = cur.fetchone()
-            
-            if not row and 'file_key' in cols:
-                cur.execute("SELECT * FROM files WHERE LOWER(file_key) = LOWER(%s)", (file_key,))
-                row = cur.fetchone()
+                if row: break
     except Exception as e:
         logger.error(f"❌ DB Query Error: {e}")
     finally:
@@ -134,11 +131,9 @@ async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYP
             elif f_type == 'audio': await context.bot.send_audio(chat_id, f_id, caption=cap)
             elif f_type == 'document': await context.bot.send_document(chat_id, f_id, caption=cap)
             elif f_type == 'link': await context.bot.send_message(chat_id, f"🔗 **رابط التحميل المباشر:**\n\n{f_id}\n\n{cap}", parse_mode='Markdown')
-        except Exception as e:
-            logger.error(f"❌ Send Error: {e}")
+        except Exception:
             await context.bot.send_message(chat_id, "❌ حدث خطأ أثناء إرسال الملف.")
     else:
-        logger.warning(f"❌ Key NOT found: {file_key}")
         await update.effective_chat.send_message("❌ الرابط غير صالح أو تم حذفه.")
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -156,12 +151,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with conn.cursor() as cur:
                 cur.execute("SELECT COUNT(*) FROM files")
                 count = cur.fetchone()[0]
-                cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
-                cols = [c[0] for c in cur.fetchall()]
             conn.close()
-            await query.answer(f"📊 إحصائيات: {count} روابط | الأعمدة: {cols}", show_alert=True)
-        else:
-            await query.answer("❌ فشل الاتصال بالقاعدة", show_alert=True)
+            await query.answer(f"📊 إجمالي الروابط في القاعدة: {count}", show_alert=True)
 
     elif data == "list_content":
         if user_id not in ADMIN_IDS: return
@@ -184,7 +175,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f_type = row['file_type']
                     cap = (row['caption'][:20] + "...") if row['caption'] and len(row['caption']) > 20 else (row['caption'] or "بدون وصف")
                     text += f"🔹 `{key}` | {f_type} | {cap}\n"
-                
                 keyboard = [[InlineKeyboardButton("🔙 عودة", callback_data="back_to_admin")]]
                 await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         finally:
@@ -252,7 +242,8 @@ def run_health_server():
 def main():
     init_db()
     threading.Thread(target=run_health_server, daemon=True).start()
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    # High stability parameters
+    app = ApplicationBuilder().token(BOT_TOKEN).read_timeout(60).write_timeout(60).connect_timeout(60).pool_timeout(60).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_admin_upload))

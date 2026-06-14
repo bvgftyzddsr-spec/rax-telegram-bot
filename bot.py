@@ -20,7 +20,10 @@ CHANNELS      = ["@RaX_ViP", "@RaX_ViP2"]
 BOT_USERNAME  = "Raxdovipbot"
 ADMIN_IDS     = [5614356064]
 DATABASE_URL  = "postgresql://postgres.jsbxltfpogoiaqiwsevs:gta738945961@aws-0-eu-west-1.pooler.supabase.com:6543/postgres?sslmode=require"
-RENDER_URL    = "https://rax-telegram-bot.onrender.com" # Replace with your actual Render URL if different
+
+# Render provides the service name in an environment variable, but it's safer to use the direct URL
+# If you ever change the name on Render, update this URL.
+RENDER_URL    = os.environ.get("RENDER_EXTERNAL_URL", "https://rax-telegram-bot.onrender.com")
 
 # ─────────────────────────────────────────────
 # 🛠️ LOGGING & STABILITY
@@ -249,14 +252,14 @@ def run_health_server():
     server.serve_forever()
 
 def keep_alive():
-    """Pings the server every 10 minutes to prevent Render from sleeping."""
+    """Pings the server every 3 minutes to prevent Render from sleeping."""
     while True:
         try:
-            requests.get(RENDER_URL)
-            logger.info("📡 Self-ping sent to keep the bot alive.")
+            requests.get(RENDER_URL, timeout=10)
+            logger.info(f"📡 Self-ping sent to {RENDER_URL}")
         except Exception as e:
             logger.error(f"⚠️ Keep-alive ping failed: {e}")
-        time.sleep(600) # 10 minutes
+        time.sleep(180) # 3 minutes
 
 # ─────────────────────────────────────────────
 # 🚀 MAIN
@@ -270,7 +273,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_admin_upload))
-    logger.info("🚀 Bot started with Keep-Alive system.")
+    logger.info("🚀 Bot started with Enhanced Keep-Alive (3 min).")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':

@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 def get_db_conn():
     try:
-        conn = psycopg2.connect(DATABASE_URL, sslmode='require', connect_timeout=5)
+        conn = psycopg2.connect(DATABASE_URL, sslmode='require', connect_timeout=10)
         return conn
     except Exception as e:
         logger.error(f"❌ DB Connection Error: {e}")
@@ -39,7 +39,7 @@ def init_db():
     conn = get_db_conn()
     if conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT table_name FROM information_schema.tables WHERE table_name = 'files'")
+            cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'files'")
             if not cur.fetchone():
                 cur.execute("""
                     CREATE TABLE files (
@@ -79,13 +79,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not args and user_id in ADMIN_IDS:
         keyboard = [
             [InlineKeyboardButton("➕ إضافة محتوى جديد", callback_data="add_new")],
-            [InlineKeyboardButton("📋 قائمة المحتويات", callback_data="list_content")]
+            [InlineKeyboardButton("📋 قائمة المحتويات", callback_data="list_content")],
+            [InlineKeyboardButton("📊 إحصائيات القاعدة", callback_data="db_stats")]
         ]
         await update.message.reply_text("👋 أهلاً بك يا مدير! هذه لوحة التحكم الخاصة بك:", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     if args:
         file_key = args[0].strip()
+        logger.info(f"🔍 Request for key: {file_key}")
         if await check_subscription(user_id, context.bot):
             await process_file_request(update, context, file_key)
         else:
@@ -100,15 +102,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYPE, file_key: str):
     conn = get_db_conn()
-    if not conn: return
+    if not conn: 
+        await update.effective_chat.send_message("❌ خطأ في الاتصال بقاعدة البيانات.")
+        return
+        
     row = None
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Check all columns for the key, case-insensitive
             cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
             cols = [c['column_name'] for c in cur.fetchall()]
-            col_name = 'key' if 'key' in cols else 'file_key'
-            cur.execute(f"SELECT * FROM files WHERE {col_name} = %s", (file_key,))
-            row = cur.fetchone()
+            
+            if 'key' in cols:
+                cur.execute("SELECT * FROM files WHERE LOWER(key) = LOWER(%s)", (file_key,))
+                row = cur.fetchone()
+            
+            if not row and 'file_key' in cols:
+                cur.execute("SELECT * FROM files WHERE LOWER(file_key) = LOWER(%s)", (file_key,))
+                row = cur.fetchone()
+    except Exception as e:
+        logger.error(f"❌ DB Query Error: {e}")
     finally:
         conn.close()
 
@@ -121,9 +134,11 @@ async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYP
             elif f_type == 'audio': await context.bot.send_audio(chat_id, f_id, caption=cap)
             elif f_type == 'document': await context.bot.send_document(chat_id, f_id, caption=cap)
             elif f_type == 'link': await context.bot.send_message(chat_id, f"🔗 **رابط التحميل المباشر:**\n\n{f_id}\n\n{cap}", parse_mode='Markdown')
-        except Exception:
+        except Exception as e:
+            logger.error(f"❌ Send Error: {e}")
             await context.bot.send_message(chat_id, "❌ حدث خطأ أثناء إرسال الملف.")
     else:
+        logger.warning(f"❌ Key NOT found: {file_key}")
         await update.effective_chat.send_message("❌ الرابط غير صالح أو تم حذفه.")
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -135,6 +150,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['waiting_for_file'] = True
         await query.edit_message_text("📥 أرسل الآن أي (ملف، صورة، فيديو، أو رابط نصي) لإضافته:")
     
+    elif data == "db_stats":
+        conn = get_db_conn()
+        if conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM files")
+                count = cur.fetchone()[0]
+                cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
+                cols = [c[0] for c in cur.fetchall()]
+            conn.close()
+            await query.answer(f"📊 إحصائيات: {count} روابط | الأعمدة: {cols}", show_alert=True)
+        else:
+            await query.answer("❌ فشل الاتصال بالقاعدة", show_alert=True)
+
     elif data == "list_content":
         if user_id not in ADMIN_IDS: return
         conn = get_db_conn()
@@ -144,7 +172,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
                 cols = [c['column_name'] for c in cur.fetchall()]
                 col_name = 'key' if 'key' in cols else 'file_key'
-                cur.execute(f"SELECT {col_name}, file_type, caption FROM files ORDER BY created_at DESC LIMIT 50")
+                cur.execute(f"SELECT {col_name} as final_key, file_type, caption FROM files ORDER BY created_at DESC LIMIT 50")
                 rows = cur.fetchall()
             
             if not rows:
@@ -152,7 +180,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 text = "📋 **قائمة آخر 50 محتوى مضاف:**\n\n"
                 for row in rows:
-                    key = row[col_name]
+                    key = row['final_key']
                     f_type = row['file_type']
                     cap = (row['caption'][:20] + "...") if row['caption'] and len(row['caption']) > 20 else (row['caption'] or "بدون وصف")
                     text += f"🔹 `{key}` | {f_type} | {cap}\n"
@@ -165,7 +193,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "back_to_admin":
         keyboard = [
             [InlineKeyboardButton("➕ إضافة محتوى جديد", callback_data="add_new")],
-            [InlineKeyboardButton("📋 قائمة المحتويات", callback_data="list_content")]
+            [InlineKeyboardButton("📋 قائمة المحتويات", callback_data="list_content")],
+            [InlineKeyboardButton("📊 إحصائيات القاعدة", callback_data="db_stats")]
         ]
         await query.edit_message_text("👋 أهلاً بك يا مدير! هذه لوحة التحكم الخاصة بك:", reply_markup=InlineKeyboardMarkup(keyboard))
 

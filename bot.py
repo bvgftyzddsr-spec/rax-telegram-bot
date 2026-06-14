@@ -28,7 +28,7 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=lo
 logger = logging.getLogger(__name__)
 
 def get_db_conn():
-    for _ in range(3): # Retry logic for stability
+    for _ in range(3):
         try:
             conn = psycopg2.connect(DATABASE_URL, sslmode='require', connect_timeout=10)
             return conn
@@ -77,6 +77,7 @@ async def check_subscription(user_id: int, bot) -> bool:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     args = context.args
+    logger.info(f"👤 Received /start from {user_id} with args: {args}")
 
     if not args and user_id in ADMIN_IDS:
         keyboard = [
@@ -102,6 +103,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 أهلاً بك في بوت تحميل الملفات المباشر!")
 
 async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYPE, file_key: str):
+    logger.info(f"🔍 Searching for key: {file_key}")
     conn = get_db_conn()
     if not conn: return
     
@@ -110,8 +112,6 @@ async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYP
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
             cols = [c['column_name'] for c in cur.fetchall()]
-            
-            # Search in all possible key columns, case-insensitive
             search_cols = [col for col in cols if col in ['key', 'file_key']]
             for col in search_cols:
                 cur.execute(f"SELECT * FROM files WHERE LOWER({col}) = LOWER(%s)", (file_key,))
@@ -125,21 +125,25 @@ async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYP
     if row:
         f_id, f_type, cap = row['file_id'], row['file_type'], row['caption'] or ""
         chat_id = update.effective_chat.id
+        logger.info(f"✅ Found {f_type}. Sending to {chat_id}...")
         try:
             if f_type == 'photo': await context.bot.send_photo(chat_id, f_id, caption=cap)
             elif f_type == 'video': await context.bot.send_video(chat_id, f_id, caption=cap)
             elif f_type == 'audio': await context.bot.send_audio(chat_id, f_id, caption=cap)
             elif f_type == 'document': await context.bot.send_document(chat_id, f_id, caption=cap)
             elif f_type == 'link': await context.bot.send_message(chat_id, f"🔗 **رابط التحميل المباشر:**\n\n{f_id}\n\n{cap}", parse_mode='Markdown')
-        except Exception:
+        except Exception as e:
+            logger.error(f"❌ Send Error: {e}")
             await context.bot.send_message(chat_id, "❌ حدث خطأ أثناء إرسال الملف.")
     else:
+        logger.warning(f"❌ Key NOT found: {file_key}")
         await update.effective_chat.send_message("❌ الرابط غير صالح أو تم حذفه.")
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     data = query.data
+    logger.info(f"🖱️ Callback from {user_id}: {data}")
 
     if data == "add_new":
         context.user_data['waiting_for_file'] = True
@@ -201,6 +205,7 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
     if update.effective_user.id not in ADMIN_IDS or not context.user_data.get('waiting_for_file'):
         return
     msg = update.message
+    logger.info(f"📤 Admin {update.effective_user.id} is uploading content.")
     f_id, f_type, cap = None, None, msg.caption or ""
     if msg.photo: f_id, f_type = msg.photo[-1].file_id, 'photo'
     elif msg.video: f_id, f_type = msg.video.file_id, 'video'
@@ -243,10 +248,11 @@ def main():
     init_db()
     threading.Thread(target=run_health_server, daemon=True).start()
     # High stability parameters
-    app = ApplicationBuilder().token(BOT_TOKEN).read_timeout(60).write_timeout(60).connect_timeout(60).pool_timeout(60).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).pool_timeout(30).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_admin_upload))
+    logger.info("🚀 Bot started. Waiting for messages...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':

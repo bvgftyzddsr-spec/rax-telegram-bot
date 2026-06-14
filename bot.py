@@ -20,6 +20,7 @@ CHANNELS      = ["@RaX_ViP", "@RaX_ViP2"]
 BOT_USERNAME  = "Raxdovipbot"
 ADMIN_IDS     = [5614356064]
 DATABASE_URL  = "postgresql://postgres.jsbxltfpogoiaqiwsevs:gta738945961@aws-0-eu-west-1.pooler.supabase.com:6543/postgres?sslmode=require"
+RENDER_URL    = "https://rax-telegram-bot.onrender.com" # Replace with your actual Render URL if different
 
 # ─────────────────────────────────────────────
 # 🛠️ LOGGING & STABILITY
@@ -232,6 +233,9 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await msg.reply_text("❌ عذراً، يجب إرسال ملف أو رابط صالح.")
 
+# ─────────────────────────────────────────────
+# 🌐 KEEP ALIVE (Self-Ping)
+# ─────────────────────────────────────────────
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -244,15 +248,29 @@ def run_health_server():
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
     server.serve_forever()
 
+def keep_alive():
+    """Pings the server every 10 minutes to prevent Render from sleeping."""
+    while True:
+        try:
+            requests.get(RENDER_URL)
+            logger.info("📡 Self-ping sent to keep the bot alive.")
+        except Exception as e:
+            logger.error(f"⚠️ Keep-alive ping failed: {e}")
+        time.sleep(600) # 10 minutes
+
+# ─────────────────────────────────────────────
+# 🚀 MAIN
+# ─────────────────────────────────────────────
 def main():
     init_db()
     threading.Thread(target=run_health_server, daemon=True).start()
-    # High stability parameters
+    threading.Thread(target=keep_alive, daemon=True).start()
+    
     app = ApplicationBuilder().token(BOT_TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).pool_timeout(30).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_admin_upload))
-    logger.info("🚀 Bot started. Waiting for messages...")
+    logger.info("🚀 Bot started with Keep-Alive system.")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':

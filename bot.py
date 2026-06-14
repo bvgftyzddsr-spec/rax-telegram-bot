@@ -25,7 +25,7 @@ from telegram.ext import (
 # ─────────────────────────────────────────────
 # ⚙️  CONFIG
 # ─────────────────────────────────────────────
-BOT_TOKEN     = "8707897595:AAHO2wpxyFcbb6mLrg0UjjpT1yP1T8G4qHY"
+BOT_TOKEN     = "8707897595:AAEBn6bouINACa7IzhB3Ih1-gn8lESkvk3o"
 CHANNELS      = ["@RaX_ViP", "@RaX_ViP2"] # القنوات المطلوبة
 BOT_USERNAME  = "Raxdovipbot"
 ADMIN_IDS     = [5614356064]

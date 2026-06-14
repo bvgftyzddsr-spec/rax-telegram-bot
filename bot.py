@@ -91,32 +91,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if args:
         file_key = args[0].strip()
-        if await check_subscription(user_id, context.bot):
-            await process_file_request(update, context, file_key)
-        else:
-            # Enhanced Subscription Message with Interaction Buttons
-            buttons = []
-            for i, ch in enumerate(CHANNELS, 1):
-                buttons.append([InlineKeyboardButton(f"📢 اشترك في القناة {i}", url=f"https://t.me/{ch.replace('@','')}")])
-            
-            # Interaction Row (Psychological only, no real check)
-            interaction_row = [
-                InlineKeyboardButton("🔥 تفاعل", url=f"https://t.me/{CHANNELS[0].replace('@','')}"),
-                InlineKeyboardButton("❤️ تفاعل", url=f"https://t.me/{CHANNELS[0].replace('@','')}"),
-                InlineKeyboardButton("💯 تفاعل", url=f"https://t.me/{CHANNELS[0].replace('@','')}")
-            ]
-            buttons.append(interaction_row)
-            
-            buttons.append([InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data=f"check_{file_key}")])
-            
-            await update.message.reply_text(
-                "⚠️ **عذراً! يجب عليك الاشتراك في قنواتنا أولاً للحصول على المحتوى:**\n\n"
-                "1️⃣ اشترك في القنوات أدناه.\n"
-                "2️⃣ تفاعل مع آخر منشور (🔥 ❤️ 💯).\n"
-                "3️⃣ اضغط على زر التحقق.",
-                reply_markup=InlineKeyboardMarkup(buttons),
-                parse_mode='Markdown'
-            )
+        # EVERYONE sees the interaction buttons first now
+        buttons = []
+        for i, ch in enumerate(CHANNELS, 1):
+            buttons.append([InlineKeyboardButton(f"📢 اشترك في القناة {i}", url=f"https://t.me/{ch.replace('@','')}")])
+        
+        # Interaction Row
+        interaction_row = [
+            InlineKeyboardButton("🔥 تفاعل", url=f"https://t.me/{CHANNELS[0].replace('@','')}"),
+            InlineKeyboardButton("❤️ تفاعل", url=f"https://t.me/{CHANNELS[0].replace('@','')}"),
+            InlineKeyboardButton("💯 تفاعل", url=f"https://t.me/{CHANNELS[0].replace('@','')}")
+        ]
+        buttons.append(interaction_row)
+        buttons.append([InlineKeyboardButton("📥 استلام الملف الآن ✅", callback_data=f"check_{file_key}")])
+        
+        await update.message.reply_text(
+            "🚀 **خطوة أخيرة للحصول على ملفك:**\n\n"
+            "🔹 اشترك في القنوات أعلاه.\n"
+            "🔹 تفاعل مع آخر منشور (🔥 ❤️ 💯).\n"
+            "🔹 ثم اضغط على الزر أدناه لاستلام ملفك فوراً.",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode='Markdown'
+        )
         return
 
     await update.message.reply_text("👋 أهلاً بك في بوت تحميل الملفات المباشر!")
@@ -213,12 +209,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("check_"):
         file_key = data.replace("check_", "").strip()
+        # Enforce subscription check ONLY when they click "Get File"
         if await check_subscription(user_id, context.bot):
             await query.answer("✅ تم التحقق بنجاح!")
             await query.delete_message()
             await process_file_request(update, context, file_key)
         else:
-            await query.answer("⚠️ لم تشترك في جميع القنوات بعد!", show_alert=True)
+            await query.answer("⚠️ عذراً! يجب عليك الاشتراك في القنوات أولاً لتفعيل زر التحميل.", show_alert=True)
 
 async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS or not context.user_data.get('waiting_for_file'):
@@ -287,7 +284,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_admin_upload))
-    logger.info("🚀 Bot started with Enhanced Keep-Alive & Reactions.")
+    logger.info("🚀 Bot started with Mandatory Reactions for all.")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':

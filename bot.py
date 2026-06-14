@@ -20,9 +20,6 @@ CHANNELS      = ["@RaX_ViP", "@RaX_ViP2"]
 BOT_USERNAME  = "Raxdovipbot"
 ADMIN_IDS     = [5614356064]
 DATABASE_URL  = "postgresql://postgres.jsbxltfpogoiaqiwsevs:gta738945961@aws-0-eu-west-1.pooler.supabase.com:6543/postgres?sslmode=require"
-
-# Render provides the service name in an environment variable, but it's safer to use the direct URL
-# If you ever change the name on Render, update this URL.
 RENDER_URL    = os.environ.get("RENDER_EXTERNAL_URL", "https://rax-telegram-bot.onrender.com")
 
 # ─────────────────────────────────────────────
@@ -97,11 +94,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if await check_subscription(user_id, context.bot):
             await process_file_request(update, context, file_key)
         else:
+            # Enhanced Subscription Message with Interaction Buttons
             buttons = []
             for i, ch in enumerate(CHANNELS, 1):
                 buttons.append([InlineKeyboardButton(f"📢 اشترك في القناة {i}", url=f"https://t.me/{ch.replace('@','')}")])
+            
+            # Interaction Row (Psychological only, no real check)
+            interaction_row = [
+                InlineKeyboardButton("🔥 تفاعل", url=f"https://t.me/{CHANNELS[0].replace('@','')}"),
+                InlineKeyboardButton("❤️ تفاعل", url=f"https://t.me/{CHANNELS[0].replace('@','')}"),
+                InlineKeyboardButton("💯 تفاعل", url=f"https://t.me/{CHANNELS[0].replace('@','')}")
+            ]
+            buttons.append(interaction_row)
+            
             buttons.append([InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data=f"check_{file_key}")])
-            await update.message.reply_text("⚠️ عذراً! يجب عليك الاشتراك في قنواتنا أولاً للحصول على المحتوى:", reply_markup=InlineKeyboardMarkup(buttons))
+            
+            await update.message.reply_text(
+                "⚠️ **عذراً! يجب عليك الاشتراك في قنواتنا أولاً للحصول على المحتوى:**\n\n"
+                "1️⃣ اشترك في القنوات أدناه.\n"
+                "2️⃣ تفاعل مع آخر منشور (🔥 ❤️ 💯).\n"
+                "3️⃣ اضغط على زر التحقق.",
+                reply_markup=InlineKeyboardMarkup(buttons),
+                parse_mode='Markdown'
+            )
         return
 
     await update.message.reply_text("👋 أهلاً بك في بوت تحميل الملفات المباشر!")
@@ -252,7 +267,6 @@ def run_health_server():
     server.serve_forever()
 
 def keep_alive():
-    """Pings the server every 3 minutes to prevent Render from sleeping."""
     while True:
         try:
             requests.get(RENDER_URL, timeout=10)
@@ -273,7 +287,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_admin_upload))
-    logger.info("🚀 Bot started with Enhanced Keep-Alive (3 min).")
+    logger.info("🚀 Bot started with Enhanced Keep-Alive & Reactions.")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':

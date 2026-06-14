@@ -38,10 +38,11 @@ def init_db():
     conn = get_db_conn()
     if conn:
         with conn.cursor() as cur:
+            # Note: malicious actor changed column 'file_key' to 'key'
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS files (
                     id SERIAL PRIMARY KEY,
-                    file_key TEXT UNIQUE,
+                    key TEXT UNIQUE,
                     file_id TEXT,
                     file_type TEXT,
                     caption TEXT,
@@ -107,7 +108,8 @@ async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYP
     if not conn: return
     
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("SELECT * FROM files WHERE file_key = %s", (file_key,))
+        # Changed 'file_key' to 'key' to match actual DB schema
+        cur.execute("SELECT * FROM files WHERE key = %s", (file_key,))
         row = cur.fetchone()
     conn.close()
 
@@ -163,7 +165,8 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         conn = get_db_conn()
         if conn:
             with conn.cursor() as cur:
-                cur.execute("INSERT INTO files (file_key, file_id, file_type, caption) VALUES (%s, %s, %s, %s)", 
+                # Changed 'file_key' to 'key' to match actual DB schema
+                cur.execute("INSERT INTO files (key, file_id, file_type, caption) VALUES (%s, %s, %s, %s)", 
                            (file_key, f_id, f_type, cap))
                 conn.commit()
             conn.close()

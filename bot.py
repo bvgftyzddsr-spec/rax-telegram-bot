@@ -7,9 +7,10 @@ import time
 import requests
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, InputMediaAudio, InputMediaDocument
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
-from telegram.error import NetworkError, RetryAfter, TimedOut, Conflict
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
 
 # ─────────────────────────────────────────────
 # ⚙️  CONFIG (RESTORED & SECURED)
@@ -38,7 +39,6 @@ def init_db():
     conn = get_db_conn()
     if conn:
         with conn.cursor() as cur:
-            # Note: malicious actor changed column 'file_key' to 'key'
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS files (
                     id SERIAL PRIMARY KEY,
@@ -74,41 +74,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     args = context.args
 
-    # 1. ADMIN PANEL
     if not args and user_id in ADMIN_IDS:
         keyboard = [[InlineKeyboardButton("➕ إضافة محتوى جديد", callback_data="add_new")]]
         await update.message.reply_text("👋 أهلاً بك يا مدير! هذه لوحة التحكم الخاصة بك:", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
-    # 2. FILE ACCESS
     if args:
         file_key = args[0]
-        subscribed = await check_subscription(user_id, context.bot)
-        
-        if subscribed:
+        if await check_subscription(user_id, context.bot):
             await process_file_request(update, context, file_key)
         else:
-            # Not subscribed - Show Join buttons
             buttons = []
             for i, ch in enumerate(CHANNELS, 1):
                 buttons.append([InlineKeyboardButton(f"📢 اشترك في القناة {i}", url=f"https://t.me/{ch.replace('@','')}")])
             buttons.append([InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data=f"check_{file_key}")])
-            
-            await update.message.reply_text(
-                "⚠️ عذراً! يجب عليك الاشتراك في قنواتنا أولاً للحصول على المحتوى:",
-                reply_markup=InlineKeyboardMarkup(buttons)
-            )
+            await update.message.reply_text("⚠️ عذراً! يجب عليك الاشتراك في قنواتنا أولاً للحصول على المحتوى:", reply_markup=InlineKeyboardMarkup(buttons))
         return
 
-    # 3. NORMAL USER START
     await update.message.reply_text("👋 أهلاً بك في بوت تحميل الملفات المباشر!")
 
 async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYPE, file_key: str):
     conn = get_db_conn()
     if not conn: return
-    
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        # Changed 'file_key' to 'key' to match actual DB schema
         cur.execute("SELECT * FROM files WHERE key = %s", (file_key,))
         row = cur.fetchone()
     conn.close()
@@ -116,14 +104,13 @@ async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYP
     if row:
         f_id, f_type, cap = row['file_id'], row['file_type'], row['caption'] or ""
         chat_id = update.effective_chat.id
-        
         try:
             if f_type == 'photo': await context.bot.send_photo(chat_id, f_id, caption=cap)
             elif f_type == 'video': await context.bot.send_video(chat_id, f_id, caption=cap)
             elif f_type == 'audio': await context.bot.send_audio(chat_id, f_id, caption=cap)
             elif f_type == 'document': await context.bot.send_document(chat_id, f_id, caption=cap)
             elif f_type == 'link': await context.bot.send_message(chat_id, f"🔗 **رابط التحميل المباشر:**\n\n{f_id}\n\n{cap}", parse_mode='Markdown')
-        except Exception as e:
+        except Exception:
             await context.bot.send_message(chat_id, "❌ حدث خطأ أثناء إرسال الملف.")
     else:
         await update.effective_chat.send_message("❌ الرابط غير صالح أو تم حذفه.")
@@ -132,13 +119,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     data = query.data
-
     if data == "add_new":
         context.user_data['waiting_for_file'] = True
         await query.edit_message_text("📥 أرسل الآن أي (ملف، صورة، فيديو، أو رابط نصي) لإضافته:")
-        return
-
-    if data.startswith("check_"):
+    elif data.startswith("check_"):
         file_key = data.replace("check_", "")
         if await check_subscription(user_id, context.bot):
             await query.answer("✅ تم التحقق بنجاح!")
@@ -150,10 +134,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS or not context.user_data.get('waiting_for_file'):
         return
-
     msg = update.message
     f_id, f_type, cap = None, None, msg.caption or ""
-
     if msg.photo: f_id, f_type = msg.photo[-1].file_id, 'photo'
     elif msg.video: f_id, f_type = msg.video.file_id, 'video'
     elif msg.audio: f_id, f_type = msg.audio.file_id, 'audio'
@@ -165,12 +147,9 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         conn = get_db_conn()
         if conn:
             with conn.cursor() as cur:
-                # Changed 'file_key' to 'key' to match actual DB schema
-                cur.execute("INSERT INTO files (key, file_id, file_type, caption) VALUES (%s, %s, %s, %s)", 
-                           (file_key, f_id, f_type, cap))
+                cur.execute("INSERT INTO files (key, file_id, file_type, caption) VALUES (%s, %s, %s, %s)", (file_key, f_id, f_type, cap))
                 conn.commit()
             conn.close()
-            
             link = f"https://t.me/{BOT_USERNAME}?start={file_key}"
             await msg.reply_text(f"✅ تم الحفظ بنجاح!\n\n🔗 الرابط الخاص بك هو:\n`{link}`", parse_mode='Markdown')
             context.user_data['waiting_for_file'] = False
@@ -178,20 +157,30 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         await msg.reply_text("❌ عذراً، يجب إرسال ملف أو رابط صالح.")
 
 # ─────────────────────────────────────────────
+# 🌐 HEALTH CHECK SERVER (For Render)
+# ─────────────────────────────────────────────
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args): return
+
+def run_health_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    logger.info(f"🌐 Health check server started on port {port}")
+    server.serve_forever()
+
+# ─────────────────────────────────────────────
 # 🚀 MAIN
 # ─────────────────────────────────────────────
-async def keep_alive():
-    while True:
-        try:
-            # Self-ping to keep Render awake
-            requests.get(f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME', 'localhost')}/", timeout=10)
-        except: pass
-        await asyncio.sleep(600)
-
 def main():
     init_db()
-    app = ApplicationBuilder().token(BOT_TOKEN).read_timeout(60).write_timeout(60).connect_timeout(60).build()
+    # Start health check server in a separate thread
+    threading.Thread(target=run_health_server, daemon=True).start()
     
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_admin_upload))

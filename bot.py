@@ -11,7 +11,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
-from concurrent.futures import ThreadPoolExecutor
 
 # ─────────────────────────────────────────────
 # ⚙️  CONFIG (STABLE & SECURE)
@@ -22,9 +21,6 @@ BOT_USERNAME  = "Raxdovipbot"
 ADMIN_IDS     = [5614356064]
 DATABASE_URL  = "postgresql://postgres.jsbxltfpogoiaqiwsevs:gta738945961@aws-0-eu-west-1.pooler.supabase.com:6543/postgres?sslmode=require"
 RENDER_URL    = os.environ.get("RENDER_EXTERNAL_URL", "https://rax-telegram-bot.onrender.com")
-
-# Thread pool for database operations
-executor = ThreadPoolExecutor(max_workers=10)
 
 # ─────────────────────────────────────────────
 # 🛠️ LOGGING & STABILITY
@@ -42,7 +38,7 @@ def get_db_conn():
             time.sleep(1)
     return None
 
-def sync_init_db():
+def init_db():
     conn = get_db_conn()
     if conn:
         with conn.cursor() as cur:
@@ -95,10 +91,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if args:
         file_key = args[0].strip()
+        # EVERYONE sees the interaction buttons first now
         buttons = []
         for i, ch in enumerate(CHANNELS, 1):
             buttons.append([InlineKeyboardButton(f"📢 اشترك في القناة {i}", url=f"https://t.me/{ch.replace('@','')}")])
         
+        # Interaction Row
         interaction_row = [
             InlineKeyboardButton("🔥 تفاعل", url=f"https://t.me/{CHANNELS[0].replace('@','')}"),
             InlineKeyboardButton("❤️ تفاعل", url=f"https://t.me/{CHANNELS[0].replace('@','')}"),
@@ -119,9 +117,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("👋 أهلاً بك في بوت تحميل الملفات المباشر!")
 
-def sync_get_file(file_key):
+async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYPE, file_key: str):
+    logger.info(f"🔍 Searching for key: {file_key}")
     conn = get_db_conn()
-    if not conn: return None
+    if not conn: return
+    
+    row = None
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
@@ -130,20 +131,16 @@ def sync_get_file(file_key):
             for col in search_cols:
                 cur.execute(f"SELECT * FROM files WHERE LOWER({col}) = LOWER(%s)", (file_key,))
                 row = cur.fetchone()
-                if row: return row
+                if row: break
     except Exception as e:
         logger.error(f"❌ DB Query Error: {e}")
     finally:
         conn.close()
-    return None
-
-async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYPE, file_key: str):
-    loop = asyncio.get_event_loop()
-    row = await loop.run_in_executor(executor, sync_get_file, file_key)
 
     if row:
         f_id, f_type, cap = row['file_id'], row['file_type'], row['caption'] or ""
         chat_id = update.effective_chat.id
+        logger.info(f"✅ Found {f_type}. Sending to {chat_id}...")
         try:
             if f_type == 'photo': await context.bot.send_photo(chat_id, f_id, caption=cap)
             elif f_type == 'video': await context.bot.send_video(chat_id, f_id, caption=cap)
@@ -154,54 +151,39 @@ async def process_file_request(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.error(f"❌ Send Error: {e}")
             await context.bot.send_message(chat_id, "❌ حدث خطأ أثناء إرسال الملف.")
     else:
+        logger.warning(f"❌ Key NOT found: {file_key}")
         await update.effective_chat.send_message("❌ الرابط غير صالح أو تم حذفه.")
-
-def sync_get_stats():
-    conn = get_db_conn()
-    if not conn: return 0
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM files")
-            return cur.fetchone()[0]
-    finally:
-        conn.close()
-
-def sync_list_content():
-    conn = get_db_conn()
-    if not conn: return []
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
-            cols = [c['column_name'] for c in cur.fetchall()]
-            col_name = 'key' if 'key' in cols else 'file_key'
-            cur.execute(f"SELECT {col_name} as final_key, file_type, caption FROM files ORDER BY created_at DESC LIMIT 50")
-            return cur.fetchall()
-    finally:
-        conn.close()
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     data = query.data
+    logger.info(f"🖱️ Callback from {user_id}: {data}")
+
+    if data == "add_new":
+        context.user_data['waiting_for_file'] = True
+        await query.edit_message_text("📥 أرسل الآن أي (ملف، صورة، فيديو، أو رابط نصي) لإضافته:")
     
-    # ⚡ IMMEDIATE RESPONSE: Always answer first to kill the loading spinner
-    if not data.startswith("check_") and data != "db_stats":
-        await query.answer()
-    
-    try:
-        if data == "add_new":
-            context.user_data['waiting_for_file'] = True
-            await query.edit_message_text("📥 أرسل الآن أي (ملف، صورة، فيديو، أو رابط نصي) لإضافته:")
-        
-        elif data == "db_stats":
-            loop = asyncio.get_event_loop()
-            count = await loop.run_in_executor(executor, sync_get_stats)
+    elif data == "db_stats":
+        conn = get_db_conn()
+        if conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM files")
+                count = cur.fetchone()[0]
+            conn.close()
             await query.answer(f"📊 إجمالي الروابط في القاعدة: {count}", show_alert=True)
 
-        elif data == "list_content":
-            if user_id not in ADMIN_IDS: return
-            loop = asyncio.get_event_loop()
-            rows = await loop.run_in_executor(executor, sync_list_content)
+    elif data == "list_content":
+        if user_id not in ADMIN_IDS: return
+        conn = get_db_conn()
+        if not conn: return
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
+                cols = [c['column_name'] for c in cur.fetchall()]
+                col_name = 'key' if 'key' in cols else 'file_key'
+                cur.execute(f"SELECT {col_name} as final_key, file_type, caption FROM files ORDER BY created_at DESC LIMIT 50")
+                rows = cur.fetchall()
             
             if not rows:
                 await query.edit_message_text("📭 لا يوجد محتوى مضاف حالياً.")
@@ -214,46 +196,32 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text += f"🔹 `{key}` | {f_type} | {cap}\n"
                 keyboard = [[InlineKeyboardButton("🔙 عودة", callback_data="back_to_admin")]]
                 await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-        elif data == "back_to_admin":
-            keyboard = [
-                [InlineKeyboardButton("➕ إضافة محتوى جديد", callback_data="add_new")],
-                [InlineKeyboardButton("📋 قائمة المحتويات", callback_data="list_content")],
-                [InlineKeyboardButton("📊 إحصائيات القاعدة", callback_data="db_stats")]
-            ]
-            await query.edit_message_text("👋 أهلاً بك يا مدير! هذه لوحة التحكم الخاصة بك:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-        elif data.startswith("check_"):
-            file_key = data.replace("check_", "").strip()
-            if await check_subscription(user_id, context.bot):
-                await query.answer("✅ تم التحقق بنجاح!")
-                try: await query.delete_message()
-                except: pass
-                await process_file_request(update, context, file_key)
-            else:
-                await query.answer("⚠️ عذراً! يجب عليك الاشتراك في القنوات أولاً لتفعيل زر التحميل.", show_alert=True)
-    except Exception as e:
-        logger.error(f"❌ Callback Error: {e}")
-
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error(f"⚠️ Update {update} caused error {context.error}")
-
-def sync_save_file(col_name, file_key, f_id, f_type, cap):
-    conn = get_db_conn()
-    if conn:
-        try:
-            with conn.cursor() as cur:
-                cur.execute(f"INSERT INTO files ({col_name}, file_id, file_type, caption) VALUES (%s, %s, %s, %s)", (file_key, f_id, f_type, cap))
-                conn.commit()
-            return True
         finally:
             conn.close()
-    return False
+
+    elif data == "back_to_admin":
+        keyboard = [
+            [InlineKeyboardButton("➕ إضافة محتوى جديد", callback_data="add_new")],
+            [InlineKeyboardButton("📋 قائمة المحتويات", callback_data="list_content")],
+            [InlineKeyboardButton("📊 إحصائيات القاعدة", callback_data="db_stats")]
+        ]
+        await query.edit_message_text("👋 أهلاً بك يا مدير! هذه لوحة التحكم الخاصة بك:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif data.startswith("check_"):
+        file_key = data.replace("check_", "").strip()
+        # Enforce subscription check ONLY when they click "Get File"
+        if await check_subscription(user_id, context.bot):
+            await query.answer("✅ تم التحقق بنجاح!")
+            await query.delete_message()
+            await process_file_request(update, context, file_key)
+        else:
+            await query.answer("⚠️ عذراً! يجب عليك الاشتراك في القنوات أولاً لتفعيل زر التحميل.", show_alert=True)
 
 async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS or not context.user_data.get('waiting_for_file'):
         return
     msg = update.message
+    logger.info(f"📤 Admin {update.effective_user.id} is uploading content.")
     f_id, f_type, cap = None, None, msg.caption or ""
     if msg.photo: f_id, f_type = msg.photo[-1].file_id, 'photo'
     elif msg.video: f_id, f_type = msg.video.file_id, 'video'
@@ -263,24 +231,20 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if f_id:
         file_key = str(uuid.uuid4())[:8]
-        # Get column name first (sync)
         conn = get_db_conn()
         if conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
-                cols = [c[0] for c in cur.fetchall()]
-                col_name = 'key' if 'key' in cols else 'file_key'
-            conn.close()
-            
-            loop = asyncio.get_event_loop()
-            success = await loop.run_in_executor(executor, sync_save_file, col_name, file_key, f_id, f_type, cap)
-            
-            if success:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'files'")
+                    cols = [c[0] for c in cur.fetchall()]
+                    col_name = 'key' if 'key' in cols else 'file_key'
+                    cur.execute(f"INSERT INTO files ({col_name}, file_id, file_type, caption) VALUES (%s, %s, %s, %s)", (file_key, f_id, f_type, cap))
+                    conn.commit()
                 link = f"https://t.me/{BOT_USERNAME}?start={file_key}"
                 await msg.reply_text(f"✅ تم الحفظ بنجاح!\n\n🔗 الرابط الخاص بك هو:\n`{link}`", parse_mode='Markdown')
                 context.user_data['waiting_for_file'] = False
-            else:
-                await msg.reply_text("❌ حدث خطأ أثناء الحفظ في القاعدة.")
+            finally:
+                conn.close()
     else:
         await msg.reply_text("❌ عذراً، يجب إرسال ملف أو رابط صالح.")
 
@@ -306,28 +270,21 @@ def keep_alive():
             logger.info(f"📡 Self-ping sent to {RENDER_URL}")
         except Exception as e:
             logger.error(f"⚠️ Keep-alive ping failed: {e}")
-        time.sleep(180)
+        time.sleep(180) # 3 minutes
 
 # ─────────────────────────────────────────────
 # 🚀 MAIN
 # ─────────────────────────────────────────────
 def main():
-    sync_init_db()
+    init_db()
     threading.Thread(target=run_health_server, daemon=True).start()
     threading.Thread(target=keep_alive, daemon=True).start()
-    
-    # ⚡ TOKEN CLEANUP: Delete Webhook and Drop Updates to clear any "hanging" connection
-    cleanup_url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true"
-    try: requests.get(cleanup_url, timeout=10)
-    except: pass
     
     app = ApplicationBuilder().token(BOT_TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).pool_timeout(30).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_admin_upload))
-    app.add_error_handler(error_handler)
-    
-    logger.info("🚀 Bot started with Token Cleanup and ThreadPool.")
+    logger.info("🚀 Bot started with Mandatory Reactions for all.")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':

@@ -15,7 +15,7 @@ import threading
 # ─────────────────────────────────────────────
 # ⚙️  CONFIG (STABLE & SECURE)
 # ─────────────────────────────────────────────
-BOT_TOKEN     = "8707897595:AAGPh91nAAZ5LOaLaGffQ-a29R5V19Pj8ew"
+BOT_TOKEN     = "8707897595:AAGhJVItttbcMayBjgMWGhpLZLCufLFtXK8"
 CHANNELS      = ["@RaX_ViP", "@RaX_ViP2"]
 BOT_USERNAME  = "Raxdovipbot"
 ADMIN_IDS     = [5614356064]

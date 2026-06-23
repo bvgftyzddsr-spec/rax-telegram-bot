@@ -159,6 +159,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
     logger.info(f"🖱️ Callback from {user_id}: {data}")
+    
+    # ⚡ QUICK FIX: Always answer callback query first to stop the loading spinner
+    # We don't answer "check_" or "db_stats" here because they need specific handling (alert or delete)
+    if not data.startswith("check_") and data != "db_stats":
+        await query.answer()
 
     if data == "add_new":
         context.user_data['waiting_for_file'] = True
